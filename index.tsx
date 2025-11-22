@@ -1,21 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Image as ImageIcon, Trash2, FileType, Captions, ListChecks, ToggleLeft, Settings2, Hash, BookOpen, Sparkles, Lightbulb, Link as LinkIcon, Globe, FileCode, FileAudio, FileVideo, Info } from 'lucide-react';
+import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Image as ImageIcon, Trash2, FileType, Captions, ListChecks, ToggleLeft, Settings2, Hash, BookOpen, Sparkles, Lightbulb, Link as LinkIcon, Globe, FileCode, FileAudio, FileVideo, Info, ArrowUp, ArrowDown, Shuffle } from 'lucide-react';
 
 // --- Globals ---
 declare const JSZip: any;
 
 // --- Types ---
 
-type QuestionType = 'TRUE_FALSE' | 'MULTIPLE_CHOICE';
+type QuestionType = 'TRUE_FALSE' | 'MULTIPLE_CHOICE' | 'RANKING' | 'MIXED';
 
 type Question = {
   id: number;
   type: QuestionType;
   text: string;
-  options?: string[]; // Only for MCQ
-  correctAnswer: boolean | string;
+  options?: string[]; // MCQ options OR Ranking items (scrambled)
+  correctAnswer?: boolean | string | string[]; // Boolean for T/F, String for MCQ, String[] for Ranking (correct order)
   explanation: string;
 };
 
@@ -29,7 +29,7 @@ type QuizState = 'SETUP' | 'GENERATING' | 'KNOWLEDGE' | 'PLAYING' | 'SUMMARY';
 
 type UserAnswer = {
   questionId: number;
-  answer: boolean | string;
+  answer: boolean | string | string[];
   isCorrect: boolean;
 };
 
@@ -63,7 +63,7 @@ const App = () => {
   
   // Settings State
   const [config, setConfig] = useState<QuizConfig>({
-    type: 'TRUE_FALSE',
+    type: 'MIXED',
     count: 15,
     enableSummary: true
   });
@@ -111,42 +111,73 @@ const App = () => {
       // Dynamic Prompt Construction
       let taskDescription = "";
       let questionSchema: Schema;
+      
+      const baseProperties = {
+        text: { type: Type.STRING, description: "The question text." },
+        explanation: { type: Type.STRING, description: "Detailed explanation of the answer." }
+      };
 
       if (config.type === 'TRUE_FALSE') {
         taskDescription = `
           Create exactly ${config.count} "True or False" judgment questions.
-          - Focus on nuance, confusing concepts, and details in speaker notes or audio tracks.
-          - Create questions that sound plausible but are false, or vice versa.
+          - Focus on nuance, confusing concepts, and details.
+          - Questions should be challenging.
         `;
         questionSchema = {
             type: Type.OBJECT,
             properties: {
-              text: { type: Type.STRING, description: "The statement for the True/False question." },
-              correctAnswer: { type: Type.BOOLEAN, description: "True if correct, False if incorrect." },
-              explanation: { type: Type.STRING, description: "Detailed explanation." }
+              ...baseProperties,
+              type: { type: Type.STRING, enum: ["TRUE_FALSE"] },
+              correctAnswerBoolean: { type: Type.BOOLEAN, description: "True if correct, False if incorrect." },
             },
-            required: ["text", "correctAnswer", "explanation"]
+            required: ["type", "text", "correctAnswerBoolean", "explanation"]
         };
-      } else {
+      } else if (config.type === 'MULTIPLE_CHOICE') {
         taskDescription = `
           Create exactly ${config.count} Multiple Choice Questions (MCQ).
           - Each question must have 4 distinct options.
           - Only ONE option should be correct.
-          - Distractors should be plausible and challenging.
         `;
         questionSchema = {
             type: Type.OBJECT,
             properties: {
-              text: { type: Type.STRING, description: "The question text." },
-              options: { 
-                type: Type.ARRAY, 
-                items: { type: Type.STRING },
-                description: "An array of exactly 4 possible answers."
-              },
-              correctAnswer: { type: Type.STRING, description: "The exact string text of the correct option." },
-              explanation: { type: Type.STRING, description: "Detailed explanation." }
+              ...baseProperties,
+              type: { type: Type.STRING, enum: ["MULTIPLE_CHOICE"] },
+              options: { type: Type.ARRAY, items: { type: Type.STRING }, description: "4 options." },
+              correctAnswerString: { type: Type.STRING, description: "The exact text of the correct option." },
             },
-            required: ["text", "options", "correctAnswer", "explanation"]
+            required: ["type", "text", "options", "correctAnswerString", "explanation"]
+        };
+      } else {
+        // MIXED MODE
+        taskDescription = `
+          Create exactly ${config.count} questions using a SMART MIX of types.
+          
+          DISTRIBUTION RULES:
+          1. Mostly Multiple Choice (MCQ) and True/False (T/F).
+          2. **RANKING/SORTING Questions**: Include MAX 2 ranking questions per 15 items.
+             - ONLY generate a Ranking question if the content involves a clear sequential process, timeline, steps, or hierarchy.
+             - If no such content exists, do NOT force a Ranking question; use MCQ instead.
+          
+          TYPES:
+          - TRUE_FALSE: Simple boolean judgment.
+          - MULTIPLE_CHOICE: 4 options, 1 correct.
+          - RANKING: Provide 3-5 items that must be ordered. 
+            - 'options' field must contain the items in a RANDOM/SCRAMBLED order.
+            - 'correctAnswerArray' field must contain the items in the CORRECT order.
+        `;
+        questionSchema = {
+            type: Type.OBJECT,
+            properties: {
+               ...baseProperties,
+               type: { type: Type.STRING, enum: ["TRUE_FALSE", "MULTIPLE_CHOICE", "RANKING"] },
+               // Optional fields based on type
+               options: { type: Type.ARRAY, items: { type: Type.STRING }, description: "MCQ choices OR Ranking items (scrambled)." },
+               correctAnswerBoolean: { type: Type.BOOLEAN, description: "For TRUE_FALSE only." },
+               correctAnswerString: { type: Type.STRING, description: "For MULTIPLE_CHOICE only." },
+               correctAnswerArray: { type: Type.ARRAY, items: { type: Type.STRING }, description: "For RANKING only (correct order)." }
+            },
+            required: ["type", "text", "explanation"]
         };
       }
 
@@ -191,16 +222,15 @@ const App = () => {
         You are a strict university-level exam creator.
         
         TASK:
-        Analyze the provided content. This may include text, slides (images), AUDIO recordings, or VIDEO clips.
-        If audio/video is provided, listen/watch carefully to extract the educational content.
-        
-        ${config.enableSummary ? "First, extract the key knowledge points into a structured format (Concepts, Emoji, Bullet Points) to help students review." : ""}
+        Analyze the provided content (Text, Slides, Audio, or Video).
+        ${config.enableSummary ? "First, extract key concepts." : ""}
         Then, ${taskDescription}
         
         CRITICAL GUIDELINES:
-        1. **High Difficulty**: Challenging questions only.
+        1. **High Difficulty**: Questions should test deep understanding, not just surface recall.
         2. **Comprehensive**: Cover the provided material evenly.
         3. **Educational**: Explanations must reference the logic used.
+        4. **Parsing**: Ensure you fill the correct fields for the chosen question type (e.g., answerBoolean for T/F, answerString for MCQ).
 
         Output pure JSON matching the schema.
       `;
@@ -234,14 +264,22 @@ const App = () => {
          parsedQuestions = generatedData;
       }
 
-      const formattedQuestions = parsedQuestions.map((q: any, index: number) => ({
-        id: index,
-        type: config.type,
-        text: q.text,
-        options: q.options, // undefined for T/F
-        correctAnswer: q.correctAnswer,
-        explanation: q.explanation
-      }));
+      const formattedQuestions = parsedQuestions.map((q: any, index: number) => {
+        // Normalize the Answer field based on type
+        let answer: any;
+        if (q.type === 'TRUE_FALSE') answer = q.correctAnswerBoolean;
+        else if (q.type === 'MULTIPLE_CHOICE') answer = q.correctAnswerString;
+        else if (q.type === 'RANKING') answer = q.correctAnswerArray;
+
+        return {
+          id: index,
+          type: q.type,
+          text: q.text,
+          options: q.options, 
+          correctAnswer: answer,
+          explanation: q.explanation
+        };
+      });
 
       setQuestions(formattedQuestions);
       
@@ -512,9 +550,17 @@ const App = () => {
     setMediaFiles(prev => prev.filter((_, i) => i !== idx));
   };
 
-  const handleAnswer = (answer: boolean | string) => {
+  const handleAnswer = (answer: boolean | string | string[]) => {
     const currentQ = questions[currentQuestionIndex];
-    const isCorrect = answer === currentQ.correctAnswer;
+    
+    let isCorrect = false;
+    if (currentQ.type === 'RANKING') {
+        const userOrder = JSON.stringify(answer);
+        const correctOrder = JSON.stringify(currentQ.correctAnswer);
+        isCorrect = userOrder === correctOrder;
+    } else {
+        isCorrect = answer === currentQ.correctAnswer;
+    }
     
     const newRecord: UserAnswer = {
       questionId: currentQ.id,
@@ -632,23 +678,30 @@ const SetupView = ({ pptText, setPptText, mediaFiles, removeMedia, handleFileUpl
 
       <div className="flex flex-col md:flex-row gap-6 flex-grow">
         {/* Question Type Selector */}
-        <div className="flex-1 min-w-[200px]">
+        <div className="flex-1 min-w-[300px]">
           <label className="block text-xs font-semibold text-indigo-900 mb-2 flex items-center gap-2">
-             {config.type === 'TRUE_FALSE' ? <ToggleLeft className="w-4 h-4" /> : <ListChecks className="w-4 h-4" />}
-             Question Type
+             {config.type === 'TRUE_FALSE' ? <ToggleLeft className="w-4 h-4" /> : config.type === 'MULTIPLE_CHOICE' ? <ListChecks className="w-4 h-4" /> : <Shuffle className="w-4 h-4" />}
+             Question Mode
           </label>
           <div className="flex bg-white rounded-lg p-1 border border-indigo-200 shadow-sm">
             <button
               onClick={() => setConfig({ ...config, type: 'TRUE_FALSE' })}
-              className={`flex-1 py-2 text-xs sm:text-sm font-bold rounded-md transition-all ${config.type === 'TRUE_FALSE' ? 'bg-indigo-600 text-white shadow' : 'text-gray-500 hover:bg-gray-50'}`}
+              className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${config.type === 'TRUE_FALSE' ? 'bg-indigo-600 text-white shadow' : 'text-gray-500 hover:bg-gray-50'}`}
             >
               True / False
             </button>
             <button
               onClick={() => setConfig({ ...config, type: 'MULTIPLE_CHOICE' })}
-              className={`flex-1 py-2 text-xs sm:text-sm font-bold rounded-md transition-all ${config.type === 'MULTIPLE_CHOICE' ? 'bg-indigo-600 text-white shadow' : 'text-gray-500 hover:bg-gray-50'}`}
+              className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${config.type === 'MULTIPLE_CHOICE' ? 'bg-indigo-600 text-white shadow' : 'text-gray-500 hover:bg-gray-50'}`}
             >
               Multiple Choice
+            </button>
+            <button
+              onClick={() => setConfig({ ...config, type: 'MIXED' })}
+              className={`flex-1 py-2 text-xs font-bold rounded-md transition-all flex items-center justify-center gap-1 ${config.type === 'MIXED' ? 'bg-indigo-600 text-white shadow' : 'text-gray-500 hover:bg-gray-50'}`}
+            >
+              <Sparkles className="w-3 h-3" />
+              Smart Mix
             </button>
           </div>
         </div>
@@ -661,8 +714,8 @@ const SetupView = ({ pptText, setPptText, mediaFiles, removeMedia, handleFileUpl
            </label>
            <input 
              type="range" 
-             min="10" 
-             max="50" 
+             min="5" 
+             max="30" 
              step="1"
              value={config.count}
              onChange={(e) => setConfig({ ...config, count: parseInt(e.target.value) })}
@@ -889,11 +942,17 @@ const KnowledgeView = ({ concepts, onStartQuiz }: { concepts: SummaryConcept[], 
 
 const QuizView = ({ question, currentQuestionIndex, totalQuestions, onAnswer, onNext }: any) => {
   const [hasAnswered, setHasAnswered] = useState(false);
-  const [selectedAnswer, setSelectedAnswer] = useState<boolean | string | null>(null);
+  const [selectedAnswer, setSelectedAnswer] = useState<boolean | string | string[] | null>(null);
+  // Local state for sorting items in RANKING questions
+  const [currentOrder, setCurrentOrder] = useState<string[]>([]);
 
   useEffect(() => {
     setHasAnswered(false);
     setSelectedAnswer(null);
+    if (question.type === 'RANKING' && question.options) {
+       // Initialize with the shuffled options provided by AI
+       setCurrentOrder([...question.options]);
+    }
   }, [question.id]);
 
   const handleChoice = (choice: boolean | string) => {
@@ -903,8 +962,35 @@ const QuizView = ({ question, currentQuestionIndex, totalQuestions, onAnswer, on
     onAnswer(choice);
   };
 
-  const isCorrect = selectedAnswer === question.correctAnswer;
+  // Submit handler specifically for ranking questions
+  const submitRanking = () => {
+    if (hasAnswered) return;
+    setSelectedAnswer(currentOrder);
+    setHasAnswered(true);
+    onAnswer(currentOrder);
+  };
+
+  // Ranking Helpers
+  const moveItem = (index: number, direction: -1 | 1) => {
+    if (hasAnswered) return;
+    const newOrder = [...currentOrder];
+    if (index + direction < 0 || index + direction >= newOrder.length) return;
+    const temp = newOrder[index];
+    newOrder[index] = newOrder[index + direction];
+    newOrder[index + direction] = temp;
+    setCurrentOrder(newOrder);
+  };
+
+  // Helper to check correctness for ranking
+  const isRankingCorrect = hasAnswered && question.type === 'RANKING' && 
+      JSON.stringify(selectedAnswer) === JSON.stringify(question.correctAnswer);
+
+  const isCorrect = question.type === 'RANKING' 
+     ? isRankingCorrect 
+     : selectedAnswer === question.correctAnswer;
+
   const isMCQ = question.type === 'MULTIPLE_CHOICE';
+  const isRanking = question.type === 'RANKING';
 
   return (
     <div className="p-6 md:p-10 h-full flex flex-col justify-between fade-in max-w-3xl mx-auto w-full">
@@ -913,8 +999,9 @@ const QuizView = ({ question, currentQuestionIndex, totalQuestions, onAnswer, on
           <span className="text-sm font-bold text-indigo-600 tracking-wider uppercase">
             Question {currentQuestionIndex + 1} <span className="text-gray-400 font-normal">/ {totalQuestions}</span>
           </span>
-          <span className="text-xs font-semibold bg-indigo-100 text-indigo-700 px-2 py-1 rounded uppercase">
-            {isMCQ ? 'Multiple Choice' : 'Judgment'}
+          <span className="text-xs font-semibold bg-indigo-100 text-indigo-700 px-2 py-1 rounded uppercase flex items-center gap-1">
+            {isMCQ ? <ListChecks className="w-3 h-3" /> : isRanking ? <ArrowDown className="w-3 h-3" /> : <ToggleLeft className="w-3 h-3" />}
+            {isMCQ ? 'Multiple Choice' : isRanking ? 'Sorting' : 'Judgment'}
           </span>
         </div>
         <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
@@ -929,6 +1016,11 @@ const QuizView = ({ question, currentQuestionIndex, totalQuestions, onAnswer, on
         <h3 className="text-xl md:text-2xl font-bold text-center text-gray-800 leading-snug">
           {question.text}
         </h3>
+        {isRanking && !hasAnswered && (
+          <p className="text-sm text-gray-500 mt-2 animate-pulse">
+            Tap arrows to reorder items, then click Submit.
+          </p>
+        )}
       </div>
 
       <div className="space-y-6 w-full">
@@ -944,6 +1036,36 @@ const QuizView = ({ question, currentQuestionIndex, totalQuestions, onAnswer, on
                   <span className="font-bold text-indigo-500 mr-3">{String.fromCharCode(65 + idx)}.</span> {option}
                 </button>
               ))}
+            </div>
+          ) : isRanking ? (
+            <div className="space-y-3">
+                {currentOrder.map((item, idx) => (
+                    <div key={idx} className="flex items-center gap-3 p-3 bg-white border-2 border-gray-200 rounded-xl shadow-sm">
+                        <div className="flex flex-col gap-1">
+                            <button 
+                                onClick={() => moveItem(idx, -1)} 
+                                disabled={idx === 0}
+                                className="p-1 hover:bg-gray-100 rounded disabled:opacity-30"
+                            >
+                                <ArrowUp className="w-4 h-4 text-gray-600" />
+                            </button>
+                            <button 
+                                onClick={() => moveItem(idx, 1)} 
+                                disabled={idx === currentOrder.length - 1}
+                                className="p-1 hover:bg-gray-100 rounded disabled:opacity-30"
+                            >
+                                <ArrowDown className="w-4 h-4 text-gray-600" />
+                            </button>
+                        </div>
+                        <div className="font-medium text-gray-700 flex-grow">{item}</div>
+                    </div>
+                ))}
+                <button 
+                    onClick={submitRanking}
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl shadow-md mt-4"
+                >
+                    Submit Order
+                </button>
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-6">
@@ -974,8 +1096,17 @@ const QuizView = ({ question, currentQuestionIndex, totalQuestions, onAnswer, on
                   {isCorrect ? 'Correct!' : 'Incorrect'}
                 </h4>
                 <p className="text-gray-800 font-medium mt-1">
-                  The answer is <span className="font-bold">{question.correctAnswer.toString()}</span>.
+                  {isRanking ? "The correct order is:" : `The answer is ${question.correctAnswer.toString()}.`}
                 </p>
+                {isRanking && (
+                    <div className="mt-2 bg-white/50 p-2 rounded border border-black/5 text-sm">
+                        {(question.correctAnswer as string[]).map((item, i) => (
+                            <div key={i} className="flex items-center gap-2">
+                                <span className="font-bold text-gray-500">{i + 1}.</span> {item}
+                            </div>
+                        ))}
+                    </div>
+                )}
               </div>
             </div>
             <div className="bg-white bg-opacity-60 rounded-lg p-4 text-gray-700 leading-relaxed border border-black/5">
@@ -1022,20 +1153,31 @@ const SummaryView = ({ questions, userAnswers, onRestart, onReplay }: any) => {
           {questions.map((q: Question, idx: number) => {
             const ua = userAnswers[idx];
             const isCorrect = ua?.isCorrect || false;
-            const userText = ua ? ua.answer.toString() : 'SKIPPED';
-            const correctText = q.correctAnswer.toString();
+            let userText = 'SKIPPED';
+            let correctText = '';
+
+            if (q.type === 'RANKING') {
+                userText = ua?.answer ? (ua.answer as string[]).join(" -> ") : 'SKIPPED';
+                correctText = (q.correctAnswer as string[]).join(" -> ");
+            } else {
+                userText = ua ? ua.answer.toString() : 'SKIPPED';
+                correctText = q.correctAnswer?.toString() || '';
+            }
 
             return (
               <div key={q.id} className={`p-5 rounded-xl border-l-4 ${isCorrect ? 'border-l-green-500 bg-green-50/50' : 'border-l-red-500 bg-red-50/50'} border border-gray-100`}>
                 <div className="flex justify-between items-start gap-4">
                   <div>
-                    <p className="font-semibold text-gray-900 text-lg mb-2">{q.text}</p>
-                    <div className="flex flex-wrap gap-3 text-sm mb-3">
-                      <span className={`px-2 py-1 rounded font-bold ${isCorrect ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    <div className="flex items-center gap-2 mb-2">
+                       <span className="text-xs font-bold uppercase bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">{q.type.replace('_', ' ')}</span>
+                       <p className="font-semibold text-gray-900 text-lg">{q.text}</p>
+                    </div>
+                    <div className="flex flex-col gap-2 text-sm mb-3">
+                      <span className={`px-2 py-1 rounded font-bold w-fit ${isCorrect ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                         You: {userText}
                       </span>
                       {!isCorrect && (
-                        <span className="px-2 py-1 rounded bg-gray-100 text-gray-700 font-bold">
+                        <span className="px-2 py-1 rounded bg-gray-100 text-gray-700 font-bold w-fit">
                           Correct: {correctText}
                         </span>
                       )}
