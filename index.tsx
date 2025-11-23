@@ -265,19 +265,27 @@ const App = () => {
       }
 
       const formattedQuestions = parsedQuestions.map((q: any, index: number) => {
-        // Normalize the Answer field based on type
+        // Robust Normalization to prevent undefined errors
         let answer: any;
-        if (q.type === 'TRUE_FALSE') answer = q.correctAnswerBoolean;
-        else if (q.type === 'MULTIPLE_CHOICE') answer = q.correctAnswerString;
-        else if (q.type === 'RANKING') answer = q.correctAnswerArray;
+        
+        if (q.type === 'TRUE_FALSE') {
+          // Explicitly check undefined to allow 'false' as a valid value
+          answer = q.correctAnswerBoolean !== undefined ? q.correctAnswerBoolean : false;
+        } 
+        else if (q.type === 'MULTIPLE_CHOICE') {
+          answer = q.correctAnswerString || "Unknown Answer";
+        } 
+        else if (q.type === 'RANKING') {
+          answer = Array.isArray(q.correctAnswerArray) ? q.correctAnswerArray : [];
+        }
 
         return {
           id: index,
-          type: q.type,
-          text: q.text,
-          options: q.options, 
+          type: q.type || 'MULTIPLE_CHOICE', // Fallback type
+          text: q.text || "Question text missing",
+          options: Array.isArray(q.options) ? q.options : [], // Ensure options is always an array
           correctAnswer: answer,
-          explanation: q.explanation
+          explanation: q.explanation || "No explanation provided."
         };
       });
 
@@ -1096,11 +1104,11 @@ const QuizView = ({ question, currentQuestionIndex, totalQuestions, onAnswer, on
                   {isCorrect ? 'Correct!' : 'Incorrect'}
                 </h4>
                 <p className="text-gray-800 font-medium mt-1">
-                  {isRanking ? "The correct order is:" : `The answer is ${question.correctAnswer.toString()}.`}
+                  {isRanking ? "The correct order is:" : `The answer is ${question.correctAnswer?.toString() ?? 'N/A'}.`}
                 </p>
                 {isRanking && (
                     <div className="mt-2 bg-white/50 p-2 rounded border border-black/5 text-sm">
-                        {(question.correctAnswer as string[]).map((item, i) => (
+                        {(Array.isArray(question.correctAnswer) ? question.correctAnswer : []).map((item: string, i: number) => (
                             <div key={i} className="flex items-center gap-2">
                                 <span className="font-bold text-gray-500">{i + 1}.</span> {item}
                             </div>
@@ -1157,11 +1165,11 @@ const SummaryView = ({ questions, userAnswers, onRestart, onReplay }: any) => {
             let correctText = '';
 
             if (q.type === 'RANKING') {
-                userText = ua?.answer ? (ua.answer as string[]).join(" -> ") : 'SKIPPED';
-                correctText = (q.correctAnswer as string[]).join(" -> ");
+                userText = ua && ua.answer ? (ua.answer as string[]).join(" -> ") : 'SKIPPED';
+                correctText = Array.isArray(q.correctAnswer) ? (q.correctAnswer as string[]).join(" -> ") : '';
             } else {
-                userText = ua ? ua.answer.toString() : 'SKIPPED';
-                correctText = q.correctAnswer?.toString() || '';
+                userText = ua && ua.answer !== undefined && ua.answer !== null ? ua.answer.toString() : 'SKIPPED';
+                correctText = q.correctAnswer !== undefined && q.correctAnswer !== null ? q.correctAnswer.toString() : 'N/A';
             }
 
             return (
