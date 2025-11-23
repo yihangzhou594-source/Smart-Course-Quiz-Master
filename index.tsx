@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Image as ImageIcon, Trash2, FileType, Captions, ListChecks, ToggleLeft, Settings2, Hash, BookOpen, Sparkles, Lightbulb, Link as LinkIcon, Globe, FileCode, FileAudio, FileVideo, Info, ArrowUp, ArrowDown, Shuffle, Eye, ArrowLeft, Check, X, Download } from 'lucide-react';
+import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Trash2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download } from 'lucide-react';
 
 // --- Globals ---
 declare const JSZip: any;
@@ -39,17 +39,78 @@ type QuizConfig = {
   enableSummary: boolean;
 };
 
-type MediaFile = {
-  data: string; // Base64 data
-  mimeType: string;
-  type: 'image' | 'audio' | 'video';
-  name: string;
-};
-
 // --- Constants ---
 
 const MODEL_NAME = 'gemini-2.5-flash';
-const MAX_FILE_SIZE_MB = 20;
+
+// --- Helper Functions ---
+
+const cleanVTT = (text: string): string => {
+  // Remove WEBVTT header
+  let clean = text.replace(/WEBVTT\s?(\w*)\n/g, '');
+  // Remove timestamps (00:00:00.000 --> 00:00:00.000)
+  clean = clean.replace(/(\d{2}:)?\d{2}:\d{2}\.\d{3} --> (\d{2}:)?\d{2}:\d{2}\.\d{3}.*\n/g, '');
+  // Remove voice tags like <v Name>
+  clean = clean.replace(/<[^>]*>/g, '');
+  // Remove empty lines and excess whitespace
+  return clean.split('\n').map(l => l.trim()).filter(l => l).join('\n');
+};
+
+const extractTextFromPPTX = async (file: File): Promise<string> => {
+    try {
+        const zip = await JSZip.loadAsync(file);
+        const slideFiles = Object.keys(zip.files).filter(name => name.match(/ppt\/slides\/slide\d+\.xml/));
+        
+        // Sort slides by number
+        slideFiles.sort((a, b) => {
+            const numA = parseInt(a.match(/slide(\d+)\.xml/)![1]);
+            const numB = parseInt(b.match(/slide(\d+)\.xml/)![1]);
+            return numA - numB;
+        });
+
+        let fullText = `[File: ${file.name}]\n`;
+        const parser = new DOMParser();
+
+        for (const filename of slideFiles) {
+            const content = await zip.file(filename).async("string");
+            const xmlDoc = parser.parseFromString(content, "text/xml");
+            // PowerPoint stores text in <a:t> tags
+            const textNodes = xmlDoc.getElementsByTagName("a:t");
+            
+            let slideText = "";
+            for (let i = 0; i < textNodes.length; i++) {
+                slideText += textNodes[i].textContent + " ";
+            }
+            if (slideText.trim()) {
+                fullText += `Slide: ${slideText.trim()}\n`;
+            }
+        }
+        return fullText;
+    } catch (e) {
+        console.error("PPTX Parse Error", e);
+        return `[Error parsing ${file.name}. Please try exporting as PDF or Text.]\n`;
+    }
+};
+
+const extractTextFromDOCX = async (file: File): Promise<string> => {
+    try {
+        const zip = await JSZip.loadAsync(file);
+        const content = await zip.file("word/document.xml").async("string");
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(content, "text/xml");
+        // Word stores text in <w:t> tags
+        const textNodes = xmlDoc.getElementsByTagName("w:t");
+        
+        let fullText = `[File: ${file.name}]\n`;
+        for (let i = 0; i < textNodes.length; i++) {
+            fullText += textNodes[i].textContent + " ";
+        }
+        return fullText;
+    } catch (e) {
+        console.error("DOCX Parse Error", e);
+        return `[Error parsing ${file.name}]\n`;
+    }
+};
 
 // --- Components ---
 
@@ -58,8 +119,6 @@ const App = () => {
   
   // Content State
   const [pptText, setPptText] = useState('');
-  const [mediaFiles, setMediaFiles] = useState<MediaFile[]>([]);
-  const [urlInput, setUrlInput] = useState('');
   
   // Settings State
   const [config, setConfig] = useState<QuizConfig>({
@@ -94,8 +153,8 @@ const App = () => {
   // --- Gemini Logic ---
 
   const generateQuiz = async () => {
-    if (!pptText.trim() && mediaFiles.length === 0) {
-      setError("Please provide content (Text, Slides, Audio, or Video) to generate questions.");
+    if (!pptText.trim()) {
+      setError("Please provide content (Text, PPTX, DOCX, or VTT) to generate questions.");
       return;
     }
 
@@ -108,20 +167,9 @@ const App = () => {
       
       const parts: any[] = [];
       
-      if (pptText) {
-        parts.push({ text: `Here is the text content/speaker notes/scripts extracted from the files:\n\n${pptText}` });
-      }
+      // We only send text now
+      parts.push({ text: `Here is the text content extracted from the user's files (Slides, Docs, Transcripts):\n\n${pptText}` });
       
-      for (const file of mediaFiles) {
-        const base64Data = file.data.split(',')[1]; 
-        parts.push({
-          inlineData: {
-            data: base64Data,
-            mimeType: file.mimeType
-          }
-        });
-      }
-
       // Dynamic Prompt Construction
       let taskDescription = "";
       
@@ -217,7 +265,7 @@ const App = () => {
         You are a strict university-level exam creator.
         
         TASK:
-        Analyze the provided content (Text, Slides, Audio, or Video).
+        Analyze the provided content.
         ${config.enableSummary ? "First, extract key concepts." : ""}
         Then, ${taskDescription}
         
@@ -355,73 +403,46 @@ const App = () => {
     setError(null);
 
     try {
-      const newFiles: MediaFile[] = [];
       let newText = pptText;
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
+        const lowerName = file.name.toLowerCase();
         
-        // Determine type
-        let type: 'image' | 'audio' | 'video' | 'text' = 'text';
-        if (file.type.startsWith('image/')) type = 'image';
-        else if (file.type.startsWith('audio/')) type = 'audio';
-        else if (file.type.startsWith('video/')) type = 'video';
-        else if (file.name.endsWith('.pptx') || file.name.endsWith('.txt')) type = 'text';
-        else {
-            // Treat unknown as text/binary attempt (could add PDF support logic here later)
-            // For now, only images/audio/video are added to mediaFiles
-        }
-
         // --- File Processing ---
         
-        // 1. PPTX / Text
-        if (file.name.endsWith('.pptx')) {
-           // We can't parse PPTX locally easily without heavy libraries.
-           // For this demo, we will instruct the user or assume they might upload images of slides.
-           // Or, if simple text, read it.
-           // NOTE: Since Gemini handles images well, we encourage exporting slides as images.
-           // BUT, we can try to read text if it's a .txt
-           alert("For PPTX files, please export slides as Images or extract text to .txt for best results. Currently adding filename only.");
-           newText += `\n[File: ${file.name}]\n`;
-        } else if (file.type === 'text/plain') {
+        if (lowerName.endsWith('.pptx')) {
+           const extracted = await extractTextFromPPTX(file);
+           newText += `\n${extracted}\n`;
+        } else if (lowerName.endsWith('.docx')) {
+           const extracted = await extractTextFromDOCX(file);
+           newText += `\n${extracted}\n`;
+        } else if (lowerName.endsWith('.vtt')) {
+           const raw = await file.text();
+           const clean = cleanVTT(raw);
+           newText += `\n[Transcript from ${file.name}]:\n${clean}\n`;
+        } else if (lowerName.endsWith('.txt') || lowerName.endsWith('.md')) {
            const text = await file.text();
            newText += `\n${text}\n`;
-        } 
-        // 2. Media Files (Image, Audio, Video)
-        else if (type !== 'text') {
-           if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-               alert(`File ${file.name} is too large (>20MB). Skipping.`);
-               continue;
+        } else {
+           // Fallback for unknown text types, try to read as text
+           try {
+             const text = await file.text();
+             newText += `\n[File ${file.name}]:\n${text}\n`;
+           } catch (e) {
+             console.warn("Could not read file", file.name);
            }
-
-           const base64 = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(reader.result as string);
-              reader.onerror = reject;
-              reader.readAsDataURL(file);
-           });
-           
-           newFiles.push({
-               data: base64,
-               mimeType: file.type,
-               type: type as any,
-               name: file.name
-           });
         }
       }
 
       setPptText(newText);
-      setMediaFiles(prev => [...prev, ...newFiles]);
 
     } catch (err) {
-       setError("Error processing files.");
+       console.error(err);
+       setError("Error processing files. Please ensure they are valid.");
     } finally {
        setIsProcessingFile(false);
     }
-  };
-
-  const removeMedia = (index: number) => {
-    setMediaFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   const handleAnswer = (answer: any) => {
@@ -458,7 +479,6 @@ const App = () => {
   const resetQuiz = () => {
     setQuizState('SETUP');
     setPptText('');
-    setMediaFiles([]);
     setQuestions([]);
     setQuizSummary([]);
     setUserAnswers([]);
@@ -522,7 +542,7 @@ const App = () => {
               <Brain className="w-8 h-8" />
               <h1 className="text-3xl font-bold">Gemini Quiz Master</h1>
             </div>
-            <p className="opacity-90">Upload lecture notes, slides (images), or audio to generate a university-grade quiz.</p>
+            <p className="opacity-90">Upload lecture content to generate a university-grade quiz.</p>
           </div>
 
           <div className="p-8 space-y-8">
@@ -535,15 +555,15 @@ const App = () => {
                   <input 
                     type="file" 
                     multiple 
-                    accept="image/*,audio/*,video/*,text/plain" // simplified acceptance
+                    accept=".pptx,.docx,.txt,.vtt,.md"
                     onChange={handleFileUpload}
                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                   />
                   <div className="bg-white p-3 rounded-full shadow-sm mb-3 group-hover:scale-110 transition-transform">
                      <Upload className="w-6 h-6 text-blue-600" />
                   </div>
-                  <p className="text-sm font-semibold text-gray-900">Upload Media</p>
-                  <p className="text-xs text-gray-500 mt-1">Images, Audio, Video, Text</p>
+                  <p className="text-sm font-semibold text-gray-900">Upload Documents</p>
+                  <p className="text-xs text-gray-500 mt-1">PPTX, DOCX, VTT, TXT</p>
                 </div>
 
                 <div className="border border-gray-200 rounded-xl p-4 bg-gray-50 flex flex-col">
@@ -559,28 +579,12 @@ const App = () => {
                   </div>
                 </div>
               </div>
-
-              {/* Media Preview */}
-              {mediaFiles.length > 0 && (
-                <div className="flex gap-2 overflow-x-auto pb-2 custom-scrollbar">
-                  {mediaFiles.map((f, i) => (
-                    <div key={i} className="relative flex-shrink-0 w-24 h-24 bg-gray-100 rounded-lg border border-gray-200 flex items-center justify-center group overflow-hidden">
-                       {f.type === 'image' ? (
-                           <img src={f.data} alt="preview" className="w-full h-full object-cover" />
-                       ) : f.type === 'video' ? (
-                           <FileVideo className="w-8 h-8 text-purple-500" />
-                       ) : (
-                           <FileAudio className="w-8 h-8 text-yellow-500" />
-                       )}
-                       <button 
-                         onClick={() => removeMedia(i)}
-                         className="absolute top-1 right-1 bg-black/50 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-                       >
-                         <XCircle className="w-4 h-4" />
-                       </button>
-                    </div>
-                  ))}
-                </div>
+              
+              {/* File Status Indicator */}
+              {pptText.length > 500 && (
+                  <div className="text-xs text-green-600 font-medium flex items-center gap-1 bg-green-50 p-2 rounded">
+                      <CheckCircle className="w-3 h-3" /> Content loaded successfully
+                  </div>
               )}
             </div>
 
@@ -653,7 +657,7 @@ const App = () => {
             >
               {isProcessingFile ? (
                 <>
-                    <Loader2 className="w-5 h-5 animate-spin" /> Processing Media...
+                    <Loader2 className="w-5 h-5 animate-spin" /> Processing Documents...
                 </>
               ) : (
                 <>
@@ -672,7 +676,7 @@ const App = () => {
       <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center fade-in">
         <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-6" />
         <h2 className="text-2xl font-bold text-gray-800 mb-2">Analyzing Content with Gemini 2.5</h2>
-        <p className="text-gray-500 max-w-md">Reading slides, listening to audio, and watching video to extract key insights and challenging questions...</p>
+        <p className="text-gray-500 max-w-md">Reading slides, transcripts, and notes to extract key insights and challenging questions...</p>
       </div>
     );
   }
