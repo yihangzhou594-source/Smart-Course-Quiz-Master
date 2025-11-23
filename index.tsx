@@ -653,7 +653,7 @@ const App = () => {
                     <p className="text-xs text-gray-500 mt-1">PPTX, DOCX, VTT, TXT</p>
                   </div>
 
-                  <div className="border border-gray-200 rounded-xl p-4 bg-gray-50 flex flex-col">
+                  <div className="border border-gray-200 rounded-xl p-4 bg-gray-50 flex flex-col h-[500px]">
                     <textarea
                       className="flex-1 bg-transparent border-none resize-none focus:ring-0 text-sm p-0 mb-2"
                       placeholder="Or paste text notes / prompt here..."
