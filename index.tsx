@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Trash2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download } from 'lucide-react';
+import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Trash2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download, Activity } from 'lucide-react';
 
 // --- Globals ---
 declare const JSZip: any;
@@ -37,6 +37,12 @@ type QuizConfig = {
   type: QuestionType;
   count: number;
   enableSummary: boolean;
+};
+
+type UsageStats = {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
 };
 
 // --- Constants ---
@@ -137,6 +143,10 @@ const App = () => {
   
   // Ranking Interaction State
   const [rankingOrder, setRankingOrder] = useState<string[]>([]);
+
+  // Stats State
+  const [usageStats, setUsageStats] = useState<UsageStats>({ requests: 0, inputTokens: 0, outputTokens: 0 });
+  const [isStatsOpen, setIsStatsOpen] = useState(false);
 
   // --- Effects ---
 
@@ -288,6 +298,16 @@ const App = () => {
           responseSchema: finalSchema
         }
       });
+
+      // Track Usage
+      const usage = response.usageMetadata;
+      if (usage) {
+        setUsageStats(prev => ({
+            requests: prev.requests + 1,
+            inputTokens: prev.inputTokens + (usage.promptTokenCount || 0),
+            outputTokens: prev.outputTokens + (usage.candidatesTokenCount || 0)
+        }));
+      }
 
       const rawText = response.text || "{}";
       const generatedData = JSON.parse(rawText);
@@ -531,197 +551,271 @@ const App = () => {
     URL.revokeObjectURL(url);
   };
 
+  // --- Common UI ---
+  const renderStats = () => (
+    <>
+      <button 
+        onClick={() => setIsStatsOpen(true)}
+        className="fixed top-4 right-4 z-50 bg-white/90 backdrop-blur p-2 rounded-full shadow-md hover:shadow-lg border border-gray-200 text-gray-600 transition-all hover:text-blue-600"
+        title="Session API Usage"
+      >
+        <Activity className="w-5 h-5" />
+      </button>
+
+      {isStatsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full mx-4 overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="bg-gray-900 text-white p-4 flex justify-between items-center">
+              <h3 className="font-bold flex items-center gap-2">
+                <Activity className="w-5 h-5" /> Session Usage Stats
+              </h3>
+              <button onClick={() => setIsStatsOpen(false)} className="hover:bg-gray-800 p-1 rounded-full transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-blue-50 p-3 rounded-xl border border-blue-100">
+                  <div className="text-xs text-blue-600 font-bold uppercase tracking-wide">Requests</div>
+                  <div className="text-2xl font-bold text-gray-900">{usageStats.requests}</div>
+                </div>
+                <div className="bg-purple-50 p-3 rounded-xl border border-purple-100">
+                  <div className="text-xs text-purple-600 font-bold uppercase tracking-wide">Total Tokens</div>
+                  <div className="text-2xl font-bold text-gray-900">
+                    {(usageStats.inputTokens + usageStats.outputTokens).toLocaleString()}
+                  </div>
+                </div>
+              </div>
+              
+              <div className="space-y-2 pt-2">
+                 <div className="flex justify-between text-sm text-gray-600">
+                    <span>Input Tokens (Prompt)</span>
+                    <span className="font-mono font-medium">{usageStats.inputTokens.toLocaleString()}</span>
+                 </div>
+                 <div className="w-full bg-gray-100 rounded-full h-2">
+                    <div className="bg-blue-500 h-2 rounded-full" style={{ width: `${(usageStats.inputTokens / Math.max(1, usageStats.inputTokens + usageStats.outputTokens)) * 100}%` }}></div>
+                 </div>
+                 
+                 <div className="flex justify-between text-sm text-gray-600">
+                    <span>Output Tokens (Response)</span>
+                    <span className="font-mono font-medium">{usageStats.outputTokens.toLocaleString()}</span>
+                 </div>
+                 <div className="w-full bg-gray-100 rounded-full h-2">
+                    <div className="bg-purple-500 h-2 rounded-full" style={{ width: `${(usageStats.outputTokens / Math.max(1, usageStats.inputTokens + usageStats.outputTokens)) * 100}%` }}></div>
+                 </div>
+              </div>
+
+              <div className="text-xs text-gray-400 text-center pt-4 border-t border-gray-100">
+                Stats reset on page refresh. <br/>
+                Check <a href="https://aistudio.google.com/app/plan_information" target="_blank" className="text-blue-600 hover:underline">Google AI Studio</a> for full quota details.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+
   // --- Render Views ---
 
   if (quizState === 'SETUP') {
     return (
-      <div className="min-h-screen flex items-center justify-center p-6 fade-in">
-        <div className="max-w-3xl w-full bg-white rounded-2xl shadow-xl overflow-hidden">
-          <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-8 text-white">
-            <div className="flex items-center gap-3 mb-2">
-              <Brain className="w-8 h-8" />
-              <h1 className="text-3xl font-bold">Gemini Quiz Master</h1>
-            </div>
-            <p className="opacity-90">Upload lecture content to generate a university-grade quiz.</p>
-          </div>
-
-          <div className="p-8 space-y-8">
-            {/* Input Section */}
-            <div className="space-y-4">
-              <label className="block text-sm font-medium text-gray-700">1. Upload Content</label>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="relative border-2 border-dashed border-gray-300 rounded-xl p-6 flex flex-col items-center justify-center text-center hover:border-blue-500 transition-colors bg-gray-50 group cursor-pointer">
-                  <input 
-                    type="file" 
-                    multiple 
-                    accept=".pptx,.docx,.txt,.vtt,.md"
-                    onChange={handleFileUpload}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  />
-                  <div className="bg-white p-3 rounded-full shadow-sm mb-3 group-hover:scale-110 transition-transform">
-                     <Upload className="w-6 h-6 text-blue-600" />
-                  </div>
-                  <p className="text-sm font-semibold text-gray-900">Upload Documents</p>
-                  <p className="text-xs text-gray-500 mt-1">PPTX, DOCX, VTT, TXT</p>
-                </div>
-
-                <div className="border border-gray-200 rounded-xl p-4 bg-gray-50 flex flex-col">
-                  <textarea
-                    className="flex-1 bg-transparent border-none resize-none focus:ring-0 text-sm p-0 mb-2"
-                    placeholder="Or paste text notes / prompt here..."
-                    value={pptText}
-                    onChange={(e) => setPptText(e.target.value)}
-                  />
-                  <div className="text-xs text-gray-400 flex justify-between">
-                    <span>{pptText.length} chars</span>
-                    <FileText className="w-4 h-4" />
-                  </div>
-                </div>
+      <>
+        {renderStats()}
+        <div className="min-h-screen flex items-center justify-center p-6 fade-in">
+          <div className="max-w-3xl w-full bg-white rounded-2xl shadow-xl overflow-hidden">
+            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-8 text-white">
+              <div className="flex items-center gap-3 mb-2">
+                <Brain className="w-8 h-8" />
+                <h1 className="text-3xl font-bold">Gemini Quiz Master</h1>
               </div>
-              
-              {/* File Status Indicator */}
-              {pptText.length > 500 && (
-                  <div className="text-xs text-green-600 font-medium flex items-center gap-1 bg-green-50 p-2 rounded">
-                      <CheckCircle className="w-3 h-3" /> Content loaded successfully
-                  </div>
-              )}
+              <p className="opacity-90">Upload lecture content to generate a university-grade quiz.</p>
             </div>
 
-            {/* Config Section */}
-            <div className="space-y-4">
-              <label className="block text-sm font-medium text-gray-700">2. Configure Quiz</label>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <button 
-                  onClick={() => setConfig({...config, type: 'MIXED'})}
-                  className={`p-4 rounded-xl border-2 text-left transition-all ${config.type === 'MIXED' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <Shuffle className={`w-5 h-5 ${config.type === 'MIXED' ? 'text-blue-600' : 'text-gray-400'}`} />
-                    <span className="font-semibold text-sm">Mixed Mode</span>
-                  </div>
-                  <p className="text-xs text-gray-500">MCQ, T/F, & Ranking</p>
-                </button>
+            <div className="p-8 space-y-8">
+              {/* Input Section */}
+              <div className="space-y-4">
+                <label className="block text-sm font-medium text-gray-700">1. Upload Content</label>
                 
-                <button 
-                  onClick={() => setConfig({...config, type: 'MULTIPLE_CHOICE'})}
-                  className={`p-4 rounded-xl border-2 text-left transition-all ${config.type === 'MULTIPLE_CHOICE' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <ListChecks className={`w-5 h-5 ${config.type === 'MULTIPLE_CHOICE' ? 'text-blue-600' : 'text-gray-400'}`} />
-                    <span className="font-semibold text-sm">Multiple Choice</span>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="relative border-2 border-dashed border-gray-300 rounded-xl p-6 flex flex-col items-center justify-center text-center hover:border-blue-500 transition-colors bg-gray-50 group cursor-pointer">
+                    <input 
+                      type="file" 
+                      multiple 
+                      accept=".pptx,.docx,.txt,.vtt,.md"
+                      onChange={handleFileUpload}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                    <div className="bg-white p-3 rounded-full shadow-sm mb-3 group-hover:scale-110 transition-transform">
+                      <Upload className="w-6 h-6 text-blue-600" />
+                    </div>
+                    <p className="text-sm font-semibold text-gray-900">Upload Documents</p>
+                    <p className="text-xs text-gray-500 mt-1">PPTX, DOCX, VTT, TXT</p>
                   </div>
-                  <p className="text-xs text-gray-500">Standard 4 options</p>
-                </button>
 
-                <button 
-                  onClick={() => setConfig({...config, type: 'TRUE_FALSE'})}
-                  className={`p-4 rounded-xl border-2 text-left transition-all ${config.type === 'TRUE_FALSE' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <ToggleLeft className={`w-5 h-5 ${config.type === 'TRUE_FALSE' ? 'text-blue-600' : 'text-gray-400'}`} />
-                    <span className="font-semibold text-sm">True / False</span>
-                  </div>
-                  <p className="text-xs text-gray-500">Rapid fire judgment</p>
-                </button>
-              </div>
-
-              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-200">
-                <div className="flex items-center gap-3">
-                  <Sparkles className="w-5 h-5 text-amber-500" />
-                  <div>
-                    <span className="block text-sm font-medium text-gray-900">Generate Key Concepts Summary</span>
-                    <span className="block text-xs text-gray-500">Get a study guide before the quiz</span>
+                  <div className="border border-gray-200 rounded-xl p-4 bg-gray-50 flex flex-col">
+                    <textarea
+                      className="flex-1 bg-transparent border-none resize-none focus:ring-0 text-sm p-0 mb-2"
+                      placeholder="Or paste text notes / prompt here..."
+                      value={pptText}
+                      onChange={(e) => setPptText(e.target.value)}
+                    />
+                    <div className="text-xs text-gray-400 flex justify-between">
+                      <span>{pptText.length} chars</span>
+                      <FileText className="w-4 h-4" />
+                    </div>
                   </div>
                 </div>
-                <button 
-                  onClick={() => setConfig({...config, enableSummary: !config.enableSummary})}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${config.enableSummary ? 'bg-blue-600' : 'bg-gray-200'}`}
-                >
-                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition transition-transform ${config.enableSummary ? 'translate-x-6' : 'translate-x-1'}`} />
-                </button>
+                
+                {/* File Status Indicator */}
+                {pptText.length > 500 && (
+                    <div className="text-xs text-green-600 font-medium flex items-center gap-1 bg-green-50 p-2 rounded">
+                        <CheckCircle className="w-3 h-3" /> Content loaded successfully
+                    </div>
+                )}
               </div>
-            </div>
 
-            {error && (
-              <div className="p-4 bg-red-50 text-red-700 rounded-xl flex items-center gap-3 text-sm">
-                <AlertCircle className="w-5 h-5 flex-shrink-0" />
-                {error}
+              {/* Config Section */}
+              <div className="space-y-4">
+                <label className="block text-sm font-medium text-gray-700">2. Configure Quiz</label>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <button 
+                    onClick={() => setConfig({...config, type: 'MIXED'})}
+                    className={`p-4 rounded-xl border-2 text-left transition-all ${config.type === 'MIXED' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <Shuffle className={`w-5 h-5 ${config.type === 'MIXED' ? 'text-blue-600' : 'text-gray-400'}`} />
+                      <span className="font-semibold text-sm">Mixed Mode</span>
+                    </div>
+                    <p className="text-xs text-gray-500">MCQ, T/F, & Ranking</p>
+                  </button>
+                  
+                  <button 
+                    onClick={() => setConfig({...config, type: 'MULTIPLE_CHOICE'})}
+                    className={`p-4 rounded-xl border-2 text-left transition-all ${config.type === 'MULTIPLE_CHOICE' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <ListChecks className={`w-5 h-5 ${config.type === 'MULTIPLE_CHOICE' ? 'text-blue-600' : 'text-gray-400'}`} />
+                      <span className="font-semibold text-sm">Multiple Choice</span>
+                    </div>
+                    <p className="text-xs text-gray-500">Standard 4 options</p>
+                  </button>
+
+                  <button 
+                    onClick={() => setConfig({...config, type: 'TRUE_FALSE'})}
+                    className={`p-4 rounded-xl border-2 text-left transition-all ${config.type === 'TRUE_FALSE' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <ToggleLeft className={`w-5 h-5 ${config.type === 'TRUE_FALSE' ? 'text-blue-600' : 'text-gray-400'}`} />
+                      <span className="font-semibold text-sm">True / False</span>
+                    </div>
+                    <p className="text-xs text-gray-500">Rapid fire judgment</p>
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-200">
+                  <div className="flex items-center gap-3">
+                    <Sparkles className="w-5 h-5 text-amber-500" />
+                    <div>
+                      <span className="block text-sm font-medium text-gray-900">Generate Key Concepts Summary</span>
+                      <span className="block text-xs text-gray-500">Get a study guide before the quiz</span>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => setConfig({...config, enableSummary: !config.enableSummary})}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${config.enableSummary ? 'bg-blue-600' : 'bg-gray-200'}`}
+                  >
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition transition-transform ${config.enableSummary ? 'translate-x-6' : 'translate-x-1'}`} />
+                  </button>
+                </div>
               </div>
-            )}
 
-            <button
-              onClick={generateQuiz}
-              disabled={isProcessingFile}
-              className="w-full py-4 bg-gray-900 hover:bg-black text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {isProcessingFile ? (
-                <>
-                    <Loader2 className="w-5 h-5 animate-spin" /> Processing Documents...
-                </>
-              ) : (
-                <>
-                    Generate Quiz <ChevronRight className="w-5 h-5" />
-                </>
+              {error && (
+                <div className="p-4 bg-red-50 text-red-700 rounded-xl flex items-center gap-3 text-sm">
+                  <AlertCircle className="w-5 h-5 flex-shrink-0" />
+                  {error}
+                </div>
               )}
-            </button>
+
+              <button
+                onClick={generateQuiz}
+                disabled={isProcessingFile}
+                className="w-full py-4 bg-gray-900 hover:bg-black text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isProcessingFile ? (
+                  <>
+                      <Loader2 className="w-5 h-5 animate-spin" /> Processing Documents...
+                  </>
+                ) : (
+                  <>
+                      Generate Quiz <ChevronRight className="w-5 h-5" />
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      </>
     );
   }
 
   if (quizState === 'GENERATING') {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center fade-in">
-        <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-6" />
-        <h2 className="text-2xl font-bold text-gray-800 mb-2">Analyzing Content with Gemini 2.5</h2>
-        <p className="text-gray-500 max-w-md">Reading slides, transcripts, and notes to extract key insights and challenging questions...</p>
-      </div>
+      <>
+        {renderStats()}
+        <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center fade-in">
+          <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-6" />
+          <h2 className="text-2xl font-bold text-gray-800 mb-2">Analyzing Content with Gemini 2.5</h2>
+          <p className="text-gray-500 max-w-md">Reading slides, transcripts, and notes to extract key insights and challenging questions...</p>
+        </div>
+      </>
     );
   }
 
   if (quizState === 'KNOWLEDGE') {
     return (
-      <div className="min-h-screen flex items-center justify-center p-6 fade-in">
-        <div className="max-w-4xl w-full bg-white rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50">
-                <div>
-                    <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                        <BookOpen className="w-5 h-5 text-blue-600" /> Key Concepts
-                    </h2>
-                    <p className="text-sm text-gray-500">Review these points before starting the quiz.</p>
-                </div>
-                <button 
-                  onClick={() => setQuizState('PLAYING')}
-                  className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
-                >
-                  Start Quiz <Play className="w-4 h-4 fill-current" />
-                </button>
-            </div>
-            
-            <div className="flex-1 overflow-y-auto p-6 bg-white custom-scrollbar">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {quizSummary.map((concept, i) => (
-                        <div key={i} className="bg-gray-50 rounded-xl p-5 border border-gray-100 hover:shadow-md transition-shadow">
-                            <div className="flex items-center gap-3 mb-3 border-b border-gray-200 pb-2">
-                                <span className="text-2xl">{concept.emoji}</span>
-                                <h3 className="font-bold text-gray-800">{concept.title}</h3>
-                            </div>
-                            <ul className="space-y-2">
-                                {concept.points.map((point, j) => (
-                                    <li key={j} className="text-sm text-gray-600 flex items-start gap-2">
-                                        <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0" />
-                                        <span>{point}</span>
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
-                    ))}
-                </div>
-            </div>
+      <>
+        {renderStats()}
+        <div className="min-h-screen flex items-center justify-center p-6 fade-in">
+          <div className="max-w-4xl w-full bg-white rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]">
+              <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+                  <div>
+                      <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                          <BookOpen className="w-5 h-5 text-blue-600" /> Key Concepts
+                      </h2>
+                      <p className="text-sm text-gray-500">Review these points before starting the quiz.</p>
+                  </div>
+                  <button 
+                    onClick={() => setQuizState('PLAYING')}
+                    className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
+                  >
+                    Start Quiz <Play className="w-4 h-4 fill-current" />
+                  </button>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto p-6 bg-white custom-scrollbar">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {quizSummary.map((concept, i) => (
+                          <div key={i} className="bg-gray-50 rounded-xl p-5 border border-gray-100 hover:shadow-md transition-shadow">
+                              <div className="flex items-center gap-3 mb-3 border-b border-gray-200 pb-2">
+                                  <span className="text-2xl">{concept.emoji}</span>
+                                  <h3 className="font-bold text-gray-800">{concept.title}</h3>
+                              </div>
+                              <ul className="space-y-2">
+                                  {concept.points.map((point, j) => (
+                                      <li key={j} className="text-sm text-gray-600 flex items-start gap-2">
+                                          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0" />
+                                          <span>{point}</span>
+                                      </li>
+                                  ))}
+                              </ul>
+                          </div>
+                      ))}
+                  </div>
+              </div>
+          </div>
         </div>
-      </div>
+      </>
     );
   }
 
@@ -731,176 +825,179 @@ const App = () => {
     const currentAnswer = userAnswers.find(ua => ua.questionId === question.id);
 
     return (
-      <div className="min-h-screen flex items-center justify-center p-6 fade-in">
-        <div className="max-w-2xl w-full bg-white rounded-2xl shadow-xl overflow-hidden">
-            {/* Progress Bar */}
-            <div className="h-2 bg-gray-100 w-full">
-                <div 
-                    className="h-full bg-blue-600 transition-all duration-300" 
-                    style={{ width: `${((currentQuestionIndex + 1) / questions.length) * 100}%` }}
-                />
-            </div>
+      <>
+        {renderStats()}
+        <div className="min-h-screen flex items-center justify-center p-6 fade-in">
+          <div className="max-w-2xl w-full bg-white rounded-2xl shadow-xl overflow-hidden">
+              {/* Progress Bar */}
+              <div className="h-2 bg-gray-100 w-full">
+                  <div 
+                      className="h-full bg-blue-600 transition-all duration-300" 
+                      style={{ width: `${((currentQuestionIndex + 1) / questions.length) * 100}%` }}
+                  />
+              </div>
 
-            <div className="p-8">
-                {/* Header */}
-                <div className="flex justify-between items-center mb-6">
-                    <span className="text-xs font-bold tracking-wider text-blue-600 uppercase bg-blue-50 px-3 py-1 rounded-full">
-                        {question.type.replace('_', ' ')}
-                    </span>
-                    <span className="text-sm font-medium text-gray-400">
-                        {currentQuestionIndex + 1} / {questions.length}
-                    </span>
-                </div>
+              <div className="p-8">
+                  {/* Header */}
+                  <div className="flex justify-between items-center mb-6">
+                      <span className="text-xs font-bold tracking-wider text-blue-600 uppercase bg-blue-50 px-3 py-1 rounded-full">
+                          {question.type.replace('_', ' ')}
+                      </span>
+                      <span className="text-sm font-medium text-gray-400">
+                          {currentQuestionIndex + 1} / {questions.length}
+                      </span>
+                  </div>
 
-                {/* Question */}
-                <h2 className="text-xl md:text-2xl font-bold text-gray-900 mb-8 leading-snug">
-                    {question.text}
-                </h2>
+                  {/* Question */}
+                  <h2 className="text-xl md:text-2xl font-bold text-gray-900 mb-8 leading-snug">
+                      {question.text}
+                  </h2>
 
-                {/* Options Area */}
-                <div className="space-y-3 mb-8">
-                    {question.type === 'TRUE_FALSE' ? (
-                        <div className="grid grid-cols-2 gap-4">
-                            {[true, false].map((val) => {
-                                const isSelected = currentAnswer?.answer === val;
-                                const isCorrect = question.correctAnswer === val;
-                                
-                                let btnClass = "py-6 rounded-xl border-2 font-semibold text-lg transition-all flex items-center justify-center gap-2 ";
-                                
-                                if (isAnswered) {
-                                    if (isCorrect) btnClass += "bg-green-100 border-green-500 text-green-700";
-                                    else if (isSelected && !isCorrect) btnClass += "bg-red-50 border-red-300 text-red-600 opacity-50";
-                                    else btnClass += "border-gray-100 text-gray-400 opacity-50";
-                                } else {
-                                    btnClass += "bg-white border-gray-200 hover:border-blue-500 hover:bg-blue-50 text-gray-700";
-                                }
+                  {/* Options Area */}
+                  <div className="space-y-3 mb-8">
+                      {question.type === 'TRUE_FALSE' ? (
+                          <div className="grid grid-cols-2 gap-4">
+                              {[true, false].map((val) => {
+                                  const isSelected = currentAnswer?.answer === val;
+                                  const isCorrect = question.correctAnswer === val;
+                                  
+                                  let btnClass = "py-6 rounded-xl border-2 font-semibold text-lg transition-all flex items-center justify-center gap-2 ";
+                                  
+                                  if (isAnswered) {
+                                      if (isCorrect) btnClass += "bg-green-100 border-green-500 text-green-700";
+                                      else if (isSelected && !isCorrect) btnClass += "bg-red-50 border-red-300 text-red-600 opacity-50";
+                                      else btnClass += "border-gray-100 text-gray-400 opacity-50";
+                                  } else {
+                                      btnClass += "bg-white border-gray-200 hover:border-blue-500 hover:bg-blue-50 text-gray-700";
+                                  }
 
-                                return (
-                                    <button 
-                                        key={val.toString()}
-                                        disabled={isAnswered}
-                                        onClick={() => handleAnswer(val)}
-                                        className={btnClass}
-                                    >
-                                        {val ? "True" : "False"}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    ) : question.type === 'MULTIPLE_CHOICE' ? (
-                        <div className="grid grid-cols-1 gap-3">
-                            {question.options?.map((opt, i) => {
-                                const isSelected = currentAnswer?.answer === opt;
-                                const isCorrect = question.correctAnswer === opt;
-                                
-                                let btnClass = "w-full p-4 rounded-xl border-2 text-left font-medium transition-all flex items-center justify-between ";
+                                  return (
+                                      <button 
+                                          key={val.toString()}
+                                          disabled={isAnswered}
+                                          onClick={() => handleAnswer(val)}
+                                          className={btnClass}
+                                      >
+                                          {val ? "True" : "False"}
+                                      </button>
+                                  );
+                              })}
+                          </div>
+                      ) : question.type === 'MULTIPLE_CHOICE' ? (
+                          <div className="grid grid-cols-1 gap-3">
+                              {question.options?.map((opt, i) => {
+                                  const isSelected = currentAnswer?.answer === opt;
+                                  const isCorrect = question.correctAnswer === opt;
+                                  
+                                  let btnClass = "w-full p-4 rounded-xl border-2 text-left font-medium transition-all flex items-center justify-between ";
 
-                                if (isAnswered) {
-                                    if (isCorrect) btnClass += "bg-green-50 border-green-500 text-green-800";
-                                    else if (isSelected) btnClass += "bg-red-50 border-red-300 text-red-700";
-                                    else btnClass += "border-gray-100 text-gray-400 opacity-50";
-                                } else {
-                                    btnClass += "bg-white border-gray-200 hover:border-blue-500 hover:bg-blue-50 text-gray-700";
-                                }
+                                  if (isAnswered) {
+                                      if (isCorrect) btnClass += "bg-green-50 border-green-500 text-green-800";
+                                      else if (isSelected) btnClass += "bg-red-50 border-red-300 text-red-700";
+                                      else btnClass += "border-gray-100 text-gray-400 opacity-50";
+                                  } else {
+                                      btnClass += "bg-white border-gray-200 hover:border-blue-500 hover:bg-blue-50 text-gray-700";
+                                  }
 
-                                return (
-                                    <button
-                                        key={i}
-                                        disabled={isAnswered}
-                                        onClick={() => handleAnswer(opt)}
-                                        className={btnClass}
-                                    >
-                                        <span>{opt}</span>
-                                        {isAnswered && isCorrect && <CheckCircle className="w-5 h-5 text-green-600" />}
-                                        {isAnswered && isSelected && !isCorrect && <XCircle className="w-5 h-5 text-red-500" />}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    ) : (
-                        // Ranking Question UI
-                        <div className="space-y-4">
-                           <p className="text-sm text-gray-500 italic mb-2">Use the arrows to arrange items in the correct order:</p>
-                           <div className="space-y-2">
-                                {(isAnswered ? (currentAnswer?.answer as string[]) : rankingOrder).map((item, i) => (
-                                     <div key={i} className={`p-3 rounded-xl border-2 flex items-center justify-between transition-all ${isAnswered ? 'bg-gray-50 border-gray-200' : 'bg-white border-gray-200 hover:border-blue-300'}`}>
-                                         <div className="flex items-center gap-3">
-                                            <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-sm font-bold text-gray-500">
-                                                {i + 1}
-                                            </div>
-                                            <span className="font-medium text-gray-700">{item}</span>
-                                         </div>
-                                         {!isAnswered && (
-                                             <div className="flex flex-col gap-1">
-                                                 <button 
-                                                    onClick={() => moveRankItem(i, 'up')}
-                                                    disabled={i === 0}
-                                                    className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-blue-600 disabled:opacity-30"
-                                                 >
-                                                     <ArrowUp className="w-4 h-4" />
-                                                 </button>
-                                                 <button 
-                                                    onClick={() => moveRankItem(i, 'down')}
-                                                    disabled={i === rankingOrder.length - 1}
-                                                    className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-blue-600 disabled:opacity-30"
-                                                 >
-                                                     <ArrowDown className="w-4 h-4" />
-                                                 </button>
-                                             </div>
-                                         )}
-                                     </div>
-                                ))}
-                           </div>
-                           {!isAnswered && (
-                               <button 
-                                 onClick={() => handleAnswer(rankingOrder)}
-                                 className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors mt-4"
-                               >
-                                 Confirm Order
-                               </button>
-                           )}
-                           {isAnswered && (
-                               <div className="mt-4 p-4 bg-blue-50 rounded-xl border border-blue-100">
-                                   <p className="text-xs font-bold text-blue-800 uppercase mb-2">Correct Order:</p>
-                                   <ol className="list-decimal list-inside space-y-1">
-                                       {(question.correctAnswer as string[]).map((item, idx) => (
-                                           <li key={idx} className="text-sm text-blue-900">{item}</li>
-                                       ))}
-                                   </ol>
-                               </div>
-                           )}
-                        </div>
-                    )}
-                </div>
-
-                {/* Feedback / Next */}
-                {isAnswered && (
-                    <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
-                        <div className={`p-4 rounded-xl mb-6 ${currentAnswer?.isCorrect ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
-                            <div className="flex items-start gap-3">
-                                <Info className={`w-5 h-5 mt-0.5 ${currentAnswer?.isCorrect ? 'text-green-600' : 'text-red-600'}`} />
-                                <div>
-                                    <p className={`font-bold text-sm mb-1 ${currentAnswer?.isCorrect ? 'text-green-800' : 'text-red-800'}`}>
-                                        {currentAnswer?.isCorrect ? 'Correct!' : 'Incorrect'}
-                                    </p>
-                                    <p className="text-sm text-gray-700 leading-relaxed">
-                                        {question.explanation}
-                                    </p>
-                                </div>
+                                  return (
+                                      <button
+                                          key={i}
+                                          disabled={isAnswered}
+                                          onClick={() => handleAnswer(opt)}
+                                          className={btnClass}
+                                      >
+                                          <span>{opt}</span>
+                                          {isAnswered && isCorrect && <CheckCircle className="w-5 h-5 text-green-600" />}
+                                          {isAnswered && isSelected && !isCorrect && <XCircle className="w-5 h-5 text-red-500" />}
+                                      </button>
+                                  );
+                              })}
+                          </div>
+                      ) : (
+                          // Ranking Question UI
+                          <div className="space-y-4">
+                            <p className="text-sm text-gray-500 italic mb-2">Use the arrows to arrange items in the correct order:</p>
+                            <div className="space-y-2">
+                                  {(isAnswered ? (currentAnswer?.answer as string[]) : rankingOrder).map((item, i) => (
+                                      <div key={i} className={`p-3 rounded-xl border-2 flex items-center justify-between transition-all ${isAnswered ? 'bg-gray-50 border-gray-200' : 'bg-white border-gray-200 hover:border-blue-300'}`}>
+                                          <div className="flex items-center gap-3">
+                                              <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-sm font-bold text-gray-500">
+                                                  {i + 1}
+                                              </div>
+                                              <span className="font-medium text-gray-700">{item}</span>
+                                          </div>
+                                          {!isAnswered && (
+                                              <div className="flex flex-col gap-1">
+                                                  <button 
+                                                      onClick={() => moveRankItem(i, 'up')}
+                                                      disabled={i === 0}
+                                                      className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-blue-600 disabled:opacity-30"
+                                                  >
+                                                      <ArrowUp className="w-4 h-4" />
+                                                  </button>
+                                                  <button 
+                                                      onClick={() => moveRankItem(i, 'down')}
+                                                      disabled={i === rankingOrder.length - 1}
+                                                      className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-blue-600 disabled:opacity-30"
+                                                  >
+                                                      <ArrowDown className="w-4 h-4" />
+                                                  </button>
+                                              </div>
+                                          )}
+                                      </div>
+                                  ))}
                             </div>
-                        </div>
-                        
-                        <button 
-                            onClick={nextQuestion}
-                            className="w-full py-4 bg-gray-900 text-white rounded-xl font-bold hover:bg-black transition-colors flex items-center justify-center gap-2"
-                        >
-                            {currentQuestionIndex === questions.length - 1 ? "Finish Quiz" : "Next Question"} <ChevronRight className="w-5 h-5" />
-                        </button>
-                    </div>
-                )}
-            </div>
+                            {!isAnswered && (
+                                <button 
+                                  onClick={() => handleAnswer(rankingOrder)}
+                                  className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors mt-4"
+                                >
+                                  Confirm Order
+                                </button>
+                            )}
+                            {isAnswered && (
+                                <div className="mt-4 p-4 bg-blue-50 rounded-xl border border-blue-100">
+                                    <p className="text-xs font-bold text-blue-800 uppercase mb-2">Correct Order:</p>
+                                    <ol className="list-decimal list-inside space-y-1">
+                                        {(question.correctAnswer as string[]).map((item, idx) => (
+                                            <li key={idx} className="text-sm text-blue-900">{item}</li>
+                                        ))}
+                                    </ol>
+                                </div>
+                            )}
+                          </div>
+                      )}
+                  </div>
+
+                  {/* Feedback / Next */}
+                  {isAnswered && (
+                      <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
+                          <div className={`p-4 rounded-xl mb-6 ${currentAnswer?.isCorrect ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+                              <div className="flex items-start gap-3">
+                                  <Info className={`w-5 h-5 mt-0.5 ${currentAnswer?.isCorrect ? 'text-green-600' : 'text-red-600'}`} />
+                                  <div>
+                                      <p className={`font-bold text-sm mb-1 ${currentAnswer?.isCorrect ? 'text-green-800' : 'text-red-800'}`}>
+                                          {currentAnswer?.isCorrect ? 'Correct!' : 'Incorrect'}
+                                      </p>
+                                      <p className="text-sm text-gray-700 leading-relaxed">
+                                          {question.explanation}
+                                      </p>
+                                  </div>
+                              </div>
+                          </div>
+                          
+                          <button 
+                              onClick={nextQuestion}
+                              className="w-full py-4 bg-gray-900 text-white rounded-xl font-bold hover:bg-black transition-colors flex items-center justify-center gap-2"
+                          >
+                              {currentQuestionIndex === questions.length - 1 ? "Finish Quiz" : "Next Question"} <ChevronRight className="w-5 h-5" />
+                          </button>
+                      </div>
+                  )}
+              </div>
+          </div>
         </div>
-      </div>
+      </>
     );
   }
 
@@ -910,124 +1007,130 @@ const App = () => {
     const hasMistakes = score < questions.length;
 
     return (
-      <div className="min-h-screen flex items-center justify-center p-6 fade-in">
-        <div className="max-w-md w-full bg-white rounded-2xl shadow-xl overflow-hidden text-center p-8">
-            <div className="mb-6 flex justify-center">
-                <div className="w-24 h-24 rounded-full bg-blue-50 flex items-center justify-center relative">
-                    <svg className="w-full h-full -rotate-90" viewBox="0 0 36 36">
-                        <path className="text-blue-100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3" />
-                        <path className="text-blue-600" strokeDasharray={`${percentage}, 100`} d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3" />
-                    </svg>
-                    <span className="absolute text-2xl font-bold text-blue-600">{percentage}%</span>
-                </div>
-            </div>
-            
-            <h2 className="text-3xl font-bold text-gray-900 mb-2">
-                {percentage >= 80 ? "Excellent!" : percentage >= 50 ? "Good Job!" : "Needs Review"}
-            </h2>
-            <p className="text-gray-500 mb-8">
-                You scored {score} out of {questions.length} questions correctly.
-            </p>
+      <>
+        {renderStats()}
+        <div className="min-h-screen flex items-center justify-center p-6 fade-in">
+          <div className="max-w-md w-full bg-white rounded-2xl shadow-xl overflow-hidden text-center p-8">
+              <div className="mb-6 flex justify-center">
+                  <div className="w-24 h-24 rounded-full bg-blue-50 flex items-center justify-center relative">
+                      <svg className="w-full h-full -rotate-90" viewBox="0 0 36 36">
+                          <path className="text-blue-100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3" />
+                          <path className="text-blue-600" strokeDasharray={`${percentage}, 100`} d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3" />
+                      </svg>
+                      <span className="absolute text-2xl font-bold text-blue-600">{percentage}%</span>
+                  </div>
+              </div>
+              
+              <h2 className="text-3xl font-bold text-gray-900 mb-2">
+                  {percentage >= 80 ? "Excellent!" : percentage >= 50 ? "Good Job!" : "Needs Review"}
+              </h2>
+              <p className="text-gray-500 mb-8">
+                  You scored {score} out of {questions.length} questions correctly.
+              </p>
 
-            <div className="space-y-3">
-                <button 
-                  onClick={() => setQuizState('REVIEW')}
-                  className="w-full py-3 bg-white border-2 border-gray-200 text-gray-700 rounded-xl font-semibold hover:border-blue-500 hover:text-blue-600 transition-colors flex items-center justify-center gap-2"
-                >
-                  <Eye className="w-4 h-4" /> Review Answers
-                </button>
+              <div className="space-y-3">
+                  <button 
+                    onClick={() => setQuizState('REVIEW')}
+                    className="w-full py-3 bg-white border-2 border-gray-200 text-gray-700 rounded-xl font-semibold hover:border-blue-500 hover:text-blue-600 transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Eye className="w-4 h-4" /> Review Answers
+                  </button>
 
-                {hasMistakes && (
-                    <button 
-                      onClick={handleExportMistakes}
-                      className="w-full py-3 bg-white border-2 border-red-200 text-red-700 rounded-xl font-semibold hover:border-red-400 hover:bg-red-50 transition-colors flex items-center justify-center gap-2"
-                    >
-                      <Download className="w-4 h-4" /> Export Wrong Questions
-                    </button>
-                )}
+                  {hasMistakes && (
+                      <button 
+                        onClick={handleExportMistakes}
+                        className="w-full py-3 bg-white border-2 border-red-200 text-red-700 rounded-xl font-semibold hover:border-red-400 hover:bg-red-50 transition-colors flex items-center justify-center gap-2"
+                      >
+                        <Download className="w-4 h-4" /> Export Wrong Questions
+                      </button>
+                  )}
 
-                <button 
-                  onClick={resetQuiz}
-                  className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-black transition-colors flex items-center justify-center gap-2"
-                >
-                  <RefreshCw className="w-4 h-4" /> Create New Quiz
-                </button>
-            </div>
+                  <button 
+                    onClick={resetQuiz}
+                    className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-black transition-colors flex items-center justify-center gap-2"
+                  >
+                    <RefreshCw className="w-4 h-4" /> Create New Quiz
+                  </button>
+              </div>
+          </div>
         </div>
-      </div>
+      </>
     );
   }
 
   if (quizState === 'REVIEW') {
       return (
-          <div className="min-h-screen bg-gray-50 p-6 fade-in">
-              <div className="max-w-3xl mx-auto space-y-6">
-                  {/* Header */}
-                  <div className="bg-white rounded-2xl p-6 shadow-sm flex items-center justify-between sticky top-6 z-10">
-                      <h2 className="text-xl font-bold text-gray-900">Quiz Review</h2>
-                      <button 
-                        onClick={() => setQuizState('SUMMARY')}
-                        className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-                      >
-                          <ArrowLeft className="w-4 h-4" /> Back to Summary
-                      </button>
-                  </div>
+          <>
+            {renderStats()}
+            <div className="min-h-screen bg-gray-50 p-6 fade-in">
+                <div className="max-w-3xl mx-auto space-y-6">
+                    {/* Header */}
+                    <div className="bg-white rounded-2xl p-6 shadow-sm flex items-center justify-between sticky top-6 z-10">
+                        <h2 className="text-xl font-bold text-gray-900">Quiz Review</h2>
+                        <button 
+                          onClick={() => setQuizState('SUMMARY')}
+                          className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                        >
+                            <ArrowLeft className="w-4 h-4" /> Back to Summary
+                        </button>
+                    </div>
 
-                  {/* List */}
-                  <div className="space-y-4 pb-12">
-                      {questions.map((q, i) => {
-                          const userAnswer = userAnswers.find(ua => ua.questionId === q.id);
-                          const isCorrect = userAnswer?.isCorrect;
+                    {/* List */}
+                    <div className="space-y-4 pb-12">
+                        {questions.map((q, i) => {
+                            const userAnswer = userAnswers.find(ua => ua.questionId === q.id);
+                            const isCorrect = userAnswer?.isCorrect;
 
-                          // Helper to format answer for display
-                          const formatAnswer = (ans: any) => {
-                              if (q.type === 'TRUE_FALSE') return ans ? "True" : "False";
-                              if (Array.isArray(ans)) return ans.join(" → ");
-                              return String(ans);
-                          };
+                            // Helper to format answer for display
+                            const formatAnswer = (ans: any) => {
+                                if (q.type === 'TRUE_FALSE') return ans ? "True" : "False";
+                                if (Array.isArray(ans)) return ans.join(" → ");
+                                return String(ans);
+                            };
 
-                          return (
-                              <div key={q.id} className={`bg-white rounded-2xl p-6 shadow-sm border-l-4 ${isCorrect ? 'border-green-500' : 'border-red-500'}`}>
-                                  <div className="flex justify-between items-start mb-4">
-                                      <span className="text-xs font-bold text-gray-400 uppercase tracking-wide">Question {i + 1}</span>
-                                      {isCorrect ? (
-                                          <div className="flex items-center gap-1 text-green-600 text-xs font-bold uppercase bg-green-50 px-2 py-1 rounded-full">
-                                              <Check className="w-3 h-3" /> Correct
-                                          </div>
-                                      ) : (
-                                          <div className="flex items-center gap-1 text-red-600 text-xs font-bold uppercase bg-red-50 px-2 py-1 rounded-full">
-                                              <X className="w-3 h-3" /> Incorrect
-                                          </div>
-                                      )}
-                                  </div>
-                                  
-                                  <h3 className="text-lg font-bold text-gray-900 mb-4">{q.text}</h3>
-                                  
-                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 text-sm">
-                                      <div className={`p-3 rounded-lg ${isCorrect ? 'bg-green-50 text-green-900' : 'bg-red-50 text-red-900'}`}>
-                                          <span className="block text-xs opacity-70 mb-1 font-semibold uppercase">Your Answer</span>
-                                          <span className="font-medium">{userAnswer ? formatAnswer(userAnswer.answer) : "Skipped"}</span>
-                                      </div>
-                                      {!isCorrect && (
-                                          <div className="p-3 rounded-lg bg-blue-50 text-blue-900">
-                                              <span className="block text-xs opacity-70 mb-1 font-semibold uppercase">Correct Answer</span>
-                                              <span className="font-medium">{formatAnswer(q.correctAnswer)}</span>
-                                          </div>
-                                      )}
-                                  </div>
+                            return (
+                                <div key={q.id} className={`bg-white rounded-2xl p-6 shadow-sm border-l-4 ${isCorrect ? 'border-green-500' : 'border-red-500'}`}>
+                                    <div className="flex justify-between items-start mb-4">
+                                        <span className="text-xs font-bold text-gray-400 uppercase tracking-wide">Question {i + 1}</span>
+                                        {isCorrect ? (
+                                            <div className="flex items-center gap-1 text-green-600 text-xs font-bold uppercase bg-green-50 px-2 py-1 rounded-full">
+                                                <Check className="w-3 h-3" /> Correct
+                                            </div>
+                                        ) : (
+                                            <div className="flex items-center gap-1 text-red-600 text-xs font-bold uppercase bg-red-50 px-2 py-1 rounded-full">
+                                                <X className="w-3 h-3" /> Incorrect
+                                            </div>
+                                        )}
+                                    </div>
+                                    
+                                    <h3 className="text-lg font-bold text-gray-900 mb-4">{q.text}</h3>
+                                    
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 text-sm">
+                                        <div className={`p-3 rounded-lg ${isCorrect ? 'bg-green-50 text-green-900' : 'bg-red-50 text-red-900'}`}>
+                                            <span className="block text-xs opacity-70 mb-1 font-semibold uppercase">Your Answer</span>
+                                            <span className="font-medium">{userAnswer ? formatAnswer(userAnswer.answer) : "Skipped"}</span>
+                                        </div>
+                                        {!isCorrect && (
+                                            <div className="p-3 rounded-lg bg-blue-50 text-blue-900">
+                                                <span className="block text-xs opacity-70 mb-1 font-semibold uppercase">Correct Answer</span>
+                                                <span className="font-medium">{formatAnswer(q.correctAnswer)}</span>
+                                            </div>
+                                        )}
+                                    </div>
 
-                                  <div className="bg-gray-50 p-4 rounded-xl">
-                                      <div className="flex items-start gap-2">
-                                          <Info className="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" />
-                                          <p className="text-sm text-gray-600 leading-relaxed">{q.explanation}</p>
-                                      </div>
-                                  </div>
-                              </div>
-                          );
-                      })}
-                  </div>
-              </div>
-          </div>
+                                    <div className="bg-gray-50 p-4 rounded-xl">
+                                        <div className="flex items-start gap-2">
+                                            <Info className="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" />
+                                            <p className="text-sm text-gray-600 leading-relaxed">{q.explanation}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            </div>
+          </>
       );
   }
 
