@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Image as ImageIcon, Trash2, FileType, Captions, ListChecks, ToggleLeft, Settings2, Hash, BookOpen, Sparkles, Lightbulb, Link as LinkIcon, Globe, FileCode, FileAudio, FileVideo, Info, ArrowUp, ArrowDown, Shuffle, Eye, ArrowLeft, Check, X } from 'lucide-react';
+import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Image as ImageIcon, Trash2, FileType, Captions, ListChecks, ToggleLeft, Settings2, Hash, BookOpen, Sparkles, Lightbulb, Link as LinkIcon, Globe, FileCode, FileAudio, FileVideo, Info, ArrowUp, ArrowDown, Shuffle, Eye, ArrowLeft, Check, X, Download } from 'lucide-react';
 
 // --- Globals ---
 declare const JSZip: any;
@@ -475,6 +475,42 @@ const App = () => {
     setRankingOrder(newOrder);
   };
 
+  const handleExportMistakes = () => {
+    const wrongAnswers = userAnswers.filter(ua => !ua.isCorrect);
+    
+    if (wrongAnswers.length === 0) {
+      alert("Great job! You have no mistakes to export.");
+      return;
+    }
+
+    let mdContent = `# Quiz Mistakes Review\nDate: ${new Date().toLocaleDateString()}\n\n`;
+
+    wrongAnswers.forEach((ua, index) => {
+      const q = questions.find(q => q.id === ua.questionId);
+      if (!q) return;
+
+      mdContent += `## Question ${index + 1} (${q.type.replace('_', ' ')})\n\n`;
+      mdContent += `**Question:** ${q.text}\n\n`;
+      
+      const formatAns = (val: any) => Array.isArray(val) ? val.join(" → ") : String(val);
+      
+      mdContent += `**Your Answer:** ${formatAns(ua.answer)}\n`;
+      mdContent += `**Correct Answer:** ${formatAns(q.correctAnswer)}\n\n`;
+      mdContent += `> **Explanation:** ${q.explanation}\n\n`;
+      mdContent += `---\n\n`;
+    });
+
+    const blob = new Blob([mdContent], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'quiz-mistakes.md';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   // --- Render Views ---
 
   if (quizState === 'SETUP') {
@@ -867,6 +903,7 @@ const App = () => {
   if (quizState === 'SUMMARY') {
     const score = userAnswers.filter(a => a.isCorrect).length;
     const percentage = Math.round((score / questions.length) * 100);
+    const hasMistakes = score < questions.length;
 
     return (
       <div className="min-h-screen flex items-center justify-center p-6 fade-in">
@@ -895,6 +932,15 @@ const App = () => {
                 >
                   <Eye className="w-4 h-4" /> Review Answers
                 </button>
+
+                {hasMistakes && (
+                    <button 
+                      onClick={handleExportMistakes}
+                      className="w-full py-3 bg-white border-2 border-red-200 text-red-700 rounded-xl font-semibold hover:border-red-400 hover:bg-red-50 transition-colors flex items-center justify-center gap-2"
+                    >
+                      <Download className="w-4 h-4" /> Export Wrong Questions
+                    </button>
+                )}
 
                 <button 
                   onClick={resetQuiz}
