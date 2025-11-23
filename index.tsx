@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Image as ImageIcon, Trash2, FileType, Captions, ListChecks, ToggleLeft, Settings2, Hash, BookOpen, Sparkles, Lightbulb, Link as LinkIcon, Globe, FileCode, FileAudio, FileVideo, Info, ArrowUp, ArrowDown, Shuffle } from 'lucide-react';
+import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Image as ImageIcon, Trash2, FileType, Captions, ListChecks, ToggleLeft, Settings2, Hash, BookOpen, Sparkles, Lightbulb, Link as LinkIcon, Globe, FileCode, FileAudio, FileVideo, Info, ArrowUp, ArrowDown, Shuffle, Eye, ArrowLeft, Check, X } from 'lucide-react';
 
 // --- Globals ---
 declare const JSZip: any;
@@ -25,7 +25,7 @@ type SummaryConcept = {
   points: string[];
 };
 
-type QuizState = 'SETUP' | 'GENERATING' | 'KNOWLEDGE' | 'PLAYING' | 'SUMMARY';
+type QuizState = 'SETUP' | 'GENERATING' | 'KNOWLEDGE' | 'PLAYING' | 'SUMMARY' | 'REVIEW';
 
 type UserAnswer = {
   questionId: number;
@@ -75,6 +75,21 @@ const App = () => {
   const [userAnswers, setUserAnswers] = useState<UserAnswer[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
+  
+  // Ranking Interaction State
+  const [rankingOrder, setRankingOrder] = useState<string[]>([]);
+
+  // --- Effects ---
+
+  // Initialize ranking order when a ranking question appears
+  useEffect(() => {
+    if (questions.length > 0 && currentQuestionIndex < questions.length) {
+      const currentQ = questions[currentQuestionIndex];
+      if (currentQ.type === 'RANKING' && currentQ.options) {
+        setRankingOrder([...currentQ.options]);
+      }
+    }
+  }, [currentQuestionIndex, questions]);
 
   // --- Gemini Logic ---
 
@@ -268,6 +283,7 @@ const App = () => {
         // Normalize strings
         if (type === 'Multiple Choice' as any || type === 'MCQ' as any) type = 'MULTIPLE_CHOICE';
         if (type === 'True False' as any || type === 'True/False' as any) type = 'TRUE_FALSE';
+        if (type === 'Ranking' as any) type = 'RANKING';
         
         // 2. Extract Answer with Fallbacks
         let finalAnswer: any;
@@ -447,6 +463,16 @@ const App = () => {
     setQuizSummary([]);
     setUserAnswers([]);
     setCurrentQuestionIndex(0);
+  };
+
+  const moveRankItem = (index: number, direction: 'up' | 'down') => {
+    if (direction === 'up' && index === 0) return;
+    if (direction === 'down' && index === rankingOrder.length - 1) return;
+    
+    const newOrder = [...rankingOrder];
+    const swapIndex = direction === 'up' ? index - 1 : index + 1;
+    [newOrder[index], newOrder[swapIndex]] = [newOrder[swapIndex], newOrder[index]];
+    setRankingOrder(newOrder);
   };
 
   // --- Render Views ---
@@ -752,25 +778,57 @@ const App = () => {
                             })}
                         </div>
                     ) : (
-                        // Placeholder for Ranking/other types if complex UI needed
-                        <div className="text-center p-8 bg-gray-50 rounded-xl border border-dashed border-gray-300">
-                           <p className="text-gray-500 mb-4">Ranking questions require drag-and-drop. For this demo, please select the option that represents the correct order:</p>
-                           {/* Simplified ranking fallback to MCQ style for stability in this demo */}
-                           <div className="grid grid-cols-1 gap-2 text-left">
-                                {question.options?.map((opt, i) => (
-                                     <div key={i} className="p-3 bg-white border border-gray-200 rounded-lg text-sm text-gray-600">
-                                         {i + 1}. {opt}
+                        // Ranking Question UI
+                        <div className="space-y-4">
+                           <p className="text-sm text-gray-500 italic mb-2">Use the arrows to arrange items in the correct order:</p>
+                           <div className="space-y-2">
+                                {(isAnswered ? (currentAnswer?.answer as string[]) : rankingOrder).map((item, i) => (
+                                     <div key={i} className={`p-3 rounded-xl border-2 flex items-center justify-between transition-all ${isAnswered ? 'bg-gray-50 border-gray-200' : 'bg-white border-gray-200 hover:border-blue-300'}`}>
+                                         <div className="flex items-center gap-3">
+                                            <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-sm font-bold text-gray-500">
+                                                {i + 1}
+                                            </div>
+                                            <span className="font-medium text-gray-700">{item}</span>
+                                         </div>
+                                         {!isAnswered && (
+                                             <div className="flex flex-col gap-1">
+                                                 <button 
+                                                    onClick={() => moveRankItem(i, 'up')}
+                                                    disabled={i === 0}
+                                                    className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-blue-600 disabled:opacity-30"
+                                                 >
+                                                     <ArrowUp className="w-4 h-4" />
+                                                 </button>
+                                                 <button 
+                                                    onClick={() => moveRankItem(i, 'down')}
+                                                    disabled={i === rankingOrder.length - 1}
+                                                    className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-blue-600 disabled:opacity-30"
+                                                 >
+                                                     <ArrowDown className="w-4 h-4" />
+                                                 </button>
+                                             </div>
+                                         )}
                                      </div>
                                 ))}
                            </div>
-                           <div className="mt-4">
+                           {!isAnswered && (
                                <button 
-                                 onClick={() => handleAnswer(question.correctAnswer)} // Auto-pass for demo simplicity on ranking
-                                 className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm"
+                                 onClick={() => handleAnswer(rankingOrder)}
+                                 className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors mt-4"
                                >
-                                 Reveal Correct Order: {Array.isArray(question.correctAnswer) ? question.correctAnswer.join(" → ") : String(question.correctAnswer)}
+                                 Confirm Order
                                </button>
-                           </div>
+                           )}
+                           {isAnswered && (
+                               <div className="mt-4 p-4 bg-blue-50 rounded-xl border border-blue-100">
+                                   <p className="text-xs font-bold text-blue-800 uppercase mb-2">Correct Order:</p>
+                                   <ol className="list-decimal list-inside space-y-1">
+                                       {(question.correctAnswer as string[]).map((item, idx) => (
+                                           <li key={idx} className="text-sm text-blue-900">{item}</li>
+                                       ))}
+                                   </ol>
+                               </div>
+                           )}
                         </div>
                     )}
                 </div>
@@ -832,6 +890,13 @@ const App = () => {
 
             <div className="space-y-3">
                 <button 
+                  onClick={() => setQuizState('REVIEW')}
+                  className="w-full py-3 bg-white border-2 border-gray-200 text-gray-700 rounded-xl font-semibold hover:border-blue-500 hover:text-blue-600 transition-colors flex items-center justify-center gap-2"
+                >
+                  <Eye className="w-4 h-4" /> Review Answers
+                </button>
+
+                <button 
                   onClick={resetQuiz}
                   className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-black transition-colors flex items-center justify-center gap-2"
                 >
@@ -841,6 +906,79 @@ const App = () => {
         </div>
       </div>
     );
+  }
+
+  if (quizState === 'REVIEW') {
+      return (
+          <div className="min-h-screen bg-gray-50 p-6 fade-in">
+              <div className="max-w-3xl mx-auto space-y-6">
+                  {/* Header */}
+                  <div className="bg-white rounded-2xl p-6 shadow-sm flex items-center justify-between sticky top-6 z-10">
+                      <h2 className="text-xl font-bold text-gray-900">Quiz Review</h2>
+                      <button 
+                        onClick={() => setQuizState('SUMMARY')}
+                        className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                      >
+                          <ArrowLeft className="w-4 h-4" /> Back to Summary
+                      </button>
+                  </div>
+
+                  {/* List */}
+                  <div className="space-y-4 pb-12">
+                      {questions.map((q, i) => {
+                          const userAnswer = userAnswers.find(ua => ua.questionId === q.id);
+                          const isCorrect = userAnswer?.isCorrect;
+
+                          // Helper to format answer for display
+                          const formatAnswer = (ans: any) => {
+                              if (q.type === 'TRUE_FALSE') return ans ? "True" : "False";
+                              if (Array.isArray(ans)) return ans.join(" → ");
+                              return String(ans);
+                          };
+
+                          return (
+                              <div key={q.id} className={`bg-white rounded-2xl p-6 shadow-sm border-l-4 ${isCorrect ? 'border-green-500' : 'border-red-500'}`}>
+                                  <div className="flex justify-between items-start mb-4">
+                                      <span className="text-xs font-bold text-gray-400 uppercase tracking-wide">Question {i + 1}</span>
+                                      {isCorrect ? (
+                                          <div className="flex items-center gap-1 text-green-600 text-xs font-bold uppercase bg-green-50 px-2 py-1 rounded-full">
+                                              <Check className="w-3 h-3" /> Correct
+                                          </div>
+                                      ) : (
+                                          <div className="flex items-center gap-1 text-red-600 text-xs font-bold uppercase bg-red-50 px-2 py-1 rounded-full">
+                                              <X className="w-3 h-3" /> Incorrect
+                                          </div>
+                                      )}
+                                  </div>
+                                  
+                                  <h3 className="text-lg font-bold text-gray-900 mb-4">{q.text}</h3>
+                                  
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 text-sm">
+                                      <div className={`p-3 rounded-lg ${isCorrect ? 'bg-green-50 text-green-900' : 'bg-red-50 text-red-900'}`}>
+                                          <span className="block text-xs opacity-70 mb-1 font-semibold uppercase">Your Answer</span>
+                                          <span className="font-medium">{userAnswer ? formatAnswer(userAnswer.answer) : "Skipped"}</span>
+                                      </div>
+                                      {!isCorrect && (
+                                          <div className="p-3 rounded-lg bg-blue-50 text-blue-900">
+                                              <span className="block text-xs opacity-70 mb-1 font-semibold uppercase">Correct Answer</span>
+                                              <span className="font-medium">{formatAnswer(q.correctAnswer)}</span>
+                                          </div>
+                                      )}
+                                  </div>
+
+                                  <div className="bg-gray-50 p-4 rounded-xl">
+                                      <div className="flex items-start gap-2">
+                                          <Info className="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" />
+                                          <p className="text-sm text-gray-600 leading-relaxed">{q.explanation}</p>
+                                      </div>
+                                  </div>
+                              </div>
+                          );
+                      })}
+                  </div>
+              </div>
+          </div>
+      );
   }
 
   return null;
