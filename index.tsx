@@ -256,9 +256,20 @@ ${transcriptText}
       } else if (config.type === 'MULTIPLE_CHOICE') {
         taskDescription = `
           Create exactly ${config.count} Multiple Choice Questions (MCQ).
+          
+          *** ADVANCED DISTRACTOR DESIGN (INTERFERENCE OPTIONS) ***
+          You must generate high-quality "distractors" (wrong answers) that discriminate between students who know the material and those who are guessing.
+          
+          RULES FOR OPTIONS:
+          1. **Plausible Logic**: Distractors should be based on common misconceptions, partial truths, or related but incorrect concepts from the text.
+          2. **Syntactic Similarity**: All options (correct and incorrect) must be similar in length, grammatical structure, and complexity. Do NOT make the correct answer significantly longer or more detailed than the distractors.
+          3. **Term Confusion**: If the content defines term A and term B, create a question about term A where term B is a distractor.
+          4. **Avoid Negatives**: Avoid double negatives in options.
+          5. **No "All/None of the above"**: These reduce the cognitive load. Do NOT use them.
+          
+          Structure:
           - Each question must have 4 distinct options.
           - Only ONE option should be correct.
-          - Distractors (wrong answers) should be plausible.
         `;
       } else {
         taskDescription = `
@@ -272,7 +283,7 @@ ${transcriptText}
           
           TYPES:
           - TRUE_FALSE: Challenging boolean judgment (use 'Hard Mode' style: swapping concepts, trick details).
-          - MULTIPLE_CHOICE: 4 options, 1 correct.
+          - MULTIPLE_CHOICE: 4 options. **CRITICAL**: Distractors must be highly plausible and tricky (interference options). Use common misconceptions and confused terms as wrong answers. Match length/grammar of correct answer.
           - RANKING: Provide 3-5 items that must be ordered. 
             - 'options' field must contain the items in a RANDOM/SCRAMBLED order.
             - 'correctAnswerArray' field must contain the items in the CORRECT order.
