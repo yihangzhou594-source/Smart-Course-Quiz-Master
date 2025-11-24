@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Trash2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download, Activity, Mic, Eraser } from 'lucide-react';
+import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Trash2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download, Activity, Mic, Eraser, Settings2 } from 'lucide-react';
 
 // --- Globals ---
 declare const JSZip: any;
@@ -65,14 +65,17 @@ const cleanVTT = (text: string): string => {
 const extractTextFromPPTX = async (file: File): Promise<string> => {
     try {
         const zip = await JSZip.loadAsync(file);
+        
+        // 1. Extract Slide Content
         const slideFiles = Object.keys(zip.files).filter(name => name.match(/ppt\/slides\/slide\d+\.xml/));
         
         // Sort slides by number
-        slideFiles.sort((a, b) => {
-            const numA = parseInt(a.match(/slide(\d+)\.xml/)![1]);
-            const numB = parseInt(b.match(/slide(\d+)\.xml/)![1]);
+        const sortFn = (a: string, b: string) => {
+            const numA = parseInt(a.match(/(\d+)\.xml/)![1]);
+            const numB = parseInt(b.match(/(\d+)\.xml/)![1]);
             return numA - numB;
-        });
+        };
+        slideFiles.sort(sortFn);
 
         let fullText = `[File: ${file.name}]\n`;
         const parser = new DOMParser();
@@ -88,9 +91,33 @@ const extractTextFromPPTX = async (file: File): Promise<string> => {
                 slideText += textNodes[i].textContent + " ";
             }
             if (slideText.trim()) {
-                fullText += `Slide: ${slideText.trim()}\n`;
+                const slideNum = filename.match(/slide(\d+)\.xml/)?.[1] || "?";
+                fullText += `[Slide ${slideNum}]: ${slideText.trim()}\n`;
             }
         }
+
+        // 2. Extract Speaker Notes (Crucial for details/exceptions)
+        const noteFiles = Object.keys(zip.files).filter(name => name.match(/ppt\/notesSlides\/notesSlide\d+\.xml/));
+        
+        if (noteFiles.length > 0) {
+            fullText += `\n=== SPEAKER NOTES / FOOTNOTES (Important for nuance) ===\n`;
+            noteFiles.sort(sortFn);
+            
+            for (const filename of noteFiles) {
+                const content = await zip.file(filename).async("string");
+                const xmlDoc = parser.parseFromString(content, "text/xml");
+                const textNodes = xmlDoc.getElementsByTagName("a:t");
+                
+                let noteText = "";
+                for (let i = 0; i < textNodes.length; i++) {
+                    noteText += textNodes[i].textContent + " ";
+                }
+                if (noteText.trim()) {
+                    fullText += `[Note]: ${noteText.trim()}\n`;
+                }
+            }
+        }
+
         return fullText;
     } catch (e) {
         console.error("PPTX Parse Error", e);
@@ -190,7 +217,7 @@ const App = () => {
       const parts: any[] = [];
       
       const fullContent = `
-=== VISUAL MATERIALS (Slides/Docs) ===
+=== VISUAL MATERIALS (Slides/Docs/Notes) ===
 ${materialText}
 
 === VERBAL TRANSCRIPT (Speech) ===
@@ -210,14 +237,27 @@ ${transcriptText}
       if (config.type === 'TRUE_FALSE') {
         taskDescription = `
           Create exactly ${config.count} "True or False" judgment questions.
-          - Focus on nuance, confusing concepts, and details.
-          - Questions should be challenging.
+          
+          *** CRITICAL STYLE INSTRUCTIONS (HARD MODE) ***
+          The user wants challenging "trick" questions that test deep understanding and attention to detail.
+          
+          GENERATE QUESTIONS USING THESE PATTERNS:
+          1. **Concept Swapping**: Take a definition of Concept A but name it Concept B. (e.g. "The Law of Segregation states that alleles of different genes segregate independently" -> FALSE, that is Independent Assortment).
+          2. **Detail Reversal**: Change a specific detail in a factual sentence. (e.g. "Hydrogen ions are pumped to the matrix" -> FALSE, they are pumped to the intermembrane space).
+          3. **Exceptions & Footnotes**: Use content specifically found in the "SPEAKER NOTES" or footnotes. (e.g. "RBCs contain mitochondria" -> FALSE, notes say they don't).
+          4. **Cis vs Trans / Alpha vs Beta**: Swap opposing terms.
+          
+          REQUIREMENTS:
+          - Approximately 50-60% of answers should be FALSE (these are better for learning).
+          - The Explanation must clearly state WHY it is false and correct the specific error.
+          - Questions must be challenging (>30% error rate style).
         `;
       } else if (config.type === 'MULTIPLE_CHOICE') {
         taskDescription = `
           Create exactly ${config.count} Multiple Choice Questions (MCQ).
           - Each question must have 4 distinct options.
           - Only ONE option should be correct.
+          - Distractors (wrong answers) should be plausible.
         `;
       } else {
         taskDescription = `
@@ -230,7 +270,7 @@ ${transcriptText}
              - If no such content exists, do NOT force a Ranking question; use MCQ instead.
           
           TYPES:
-          - TRUE_FALSE: Simple boolean judgment.
+          - TRUE_FALSE: Challenging boolean judgment (use 'Hard Mode' style: swapping concepts, trick details).
           - MULTIPLE_CHOICE: 4 options, 1 correct.
           - RANKING: Provide 3-5 items that must be ordered. 
             - 'options' field must contain the items in a RANDOM/SCRAMBLED order.
@@ -295,16 +335,15 @@ ${transcriptText}
         You are a strict university-level exam creator.
         
         TASK:
-        Analyze the provided content (both visuals and transcripts).
+        Analyze the provided content (slides, notes, transcripts).
         ${config.enableSummary ? "First, extract key concepts." : ""}
         Then, ${taskDescription}
         
         CRITICAL GUIDELINES:
         1. **High Difficulty**: Questions should test deep understanding, not just surface recall.
-        2. **Comprehensive**: Cover the provided material evenly.
-        3. **Educational**: Explanations must reference the logic used.
-        4. **Parsing**: Ensure you fill the correct fields for the chosen question type.
-        5. **RANKING**: Ensure 'correctAnswerArray' uses the EXACT SAME STRINGS as 'options'.
+        2. **Notes Usage**: You MUST incorporate details found in the [Note] sections of the text (footnotes, speaker notes) to create challenging questions.
+        3. **Parsing**: Ensure you fill the correct fields for the chosen question type.
+        4. **RANKING**: Ensure 'correctAnswerArray' uses the EXACT SAME STRINGS as 'options'.
 
         Output pure JSON matching the schema.
       `;
@@ -706,7 +745,7 @@ ${transcriptText}
                             </div>
                         </div>
 
-                        <div className="border border-gray-200 rounded-xl p-3 bg-gray-50 flex flex-col h-[400px]">
+                        <div className="border border-gray-200 rounded-xl p-3 bg-gray-50 flex flex-col h-[500px]">
                             <textarea
                             className="flex-1 bg-transparent border-none resize-none focus:ring-0 text-sm p-2 custom-scrollbar focus:outline-none"
                             placeholder="Or paste slide content / notes here..."
@@ -752,7 +791,7 @@ ${transcriptText}
                             </div>
                         </div>
 
-                        <div className="border border-gray-200 rounded-xl p-3 bg-gray-50 flex flex-col h-[400px]">
+                        <div className="border border-gray-200 rounded-xl p-3 bg-gray-50 flex flex-col h-[500px]">
                             <textarea
                             className="flex-1 bg-transparent border-none resize-none focus:ring-0 text-sm p-2 custom-scrollbar focus:outline-none"
                             placeholder="Paste VTT or speech transcript here..."
@@ -773,7 +812,7 @@ ${transcriptText}
                 <label className="block text-sm font-medium text-gray-700">2. Configure Quiz</label>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <button 
-                    onClick={() => setConfig({...config, type: 'MIXED'})}
+                    onClick={() => setConfig(prev => ({...prev, type: 'MIXED'}))}
                     className={`p-4 rounded-xl border-2 text-left transition-all ${config.type === 'MIXED' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
                   >
                     <div className="flex items-center gap-2 mb-1">
@@ -784,7 +823,7 @@ ${transcriptText}
                   </button>
                   
                   <button 
-                    onClick={() => setConfig({...config, type: 'MULTIPLE_CHOICE'})}
+                    onClick={() => setConfig(prev => ({...prev, type: 'MULTIPLE_CHOICE'}))}
                     className={`p-4 rounded-xl border-2 text-left transition-all ${config.type === 'MULTIPLE_CHOICE' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
                   >
                     <div className="flex items-center gap-2 mb-1">
@@ -795,15 +834,41 @@ ${transcriptText}
                   </button>
 
                   <button 
-                    onClick={() => setConfig({...config, type: 'TRUE_FALSE'})}
+                    onClick={() => setConfig(prev => ({...prev, type: 'TRUE_FALSE'}))}
                     className={`p-4 rounded-xl border-2 text-left transition-all ${config.type === 'TRUE_FALSE' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
                   >
                     <div className="flex items-center gap-2 mb-1">
                       <ToggleLeft className={`w-5 h-5 ${config.type === 'TRUE_FALSE' ? 'text-blue-600' : 'text-gray-400'}`} />
                       <span className="font-semibold text-sm">True / False</span>
                     </div>
-                    <p className="text-xs text-gray-500">Rapid fire judgment</p>
+                    <p className="text-xs text-gray-500">Hard Mode & Nuance</p>
                   </button>
+                </div>
+                
+                {/* Question Count Slider */}
+                <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                  <div className="flex justify-between items-center mb-2">
+                    <div className="flex items-center gap-2">
+                        <Settings2 className="w-4 h-4 text-gray-500" />
+                        <label className="text-sm font-medium text-gray-700">Question Quantity</label>
+                    </div>
+                    <span className="text-blue-600 font-bold bg-white border border-blue-100 px-3 py-0.5 rounded-lg text-sm shadow-sm">{config.count} Questions</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="15" 
+                    max="50" 
+                    step="1"
+                    value={config.count}
+                    onChange={(e) => setConfig({...config, count: parseInt(e.target.value)})}
+                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600 hover:bg-gray-300 transition-colors"
+                  />
+                  <div className="flex justify-between text-xs text-gray-400 mt-2 px-1 font-medium">
+                    <span>15</span>
+                    <span>25</span>
+                    <span>35</span>
+                    <span>50</span>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-200">
@@ -859,7 +924,7 @@ ${transcriptText}
         <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center fade-in">
           <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-6" />
           <h2 className="text-2xl font-bold text-gray-800 mb-2">Analyzing Content with Gemini 2.5</h2>
-          <p className="text-gray-500 max-w-md">Reading slides, transcripts, and notes to extract key insights and challenging questions...</p>
+          <p className="text-gray-500 max-w-md">Reading slides, notes, and transcripts to extract key insights and challenge your knowledge...</p>
         </div>
       </>
     );
