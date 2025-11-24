@@ -118,6 +118,17 @@ const extractTextFromDOCX = async (file: File): Promise<string> => {
     }
 };
 
+// Robust Array Comparison
+const isRankingCorrect = (correct: string[], answer: string[]): boolean => {
+    if (!Array.isArray(correct) || !Array.isArray(answer)) return false;
+    if (correct.length !== answer.length) return false;
+    
+    // Normalize strings: remove extra spaces, lowercase
+    const normalize = (s: string) => String(s).trim().toLowerCase().replace(/\s+/g, ' ');
+    
+    return correct.every((item, index) => normalize(item) === normalize(answer[index]));
+};
+
 // --- Components ---
 
 const App = () => {
@@ -216,6 +227,7 @@ const App = () => {
           - RANKING: Provide 3-5 items that must be ordered. 
             - 'options' field must contain the items in a RANDOM/SCRAMBLED order.
             - 'correctAnswerArray' field must contain the items in the CORRECT order.
+            - **CRITICAL**: The strings in 'correctAnswerArray' MUST BE IDENTICAL to the strings in 'options'. Do not add numbering or extra text.
         `;
       }
 
@@ -229,7 +241,7 @@ const App = () => {
               // We ask for specific fields, but the parser will look for fallbacks
               correctAnswerBoolean: { type: Type.BOOLEAN, description: "For TRUE_FALSE only." },
               correctAnswerString: { type: Type.STRING, description: "For MULTIPLE_CHOICE only." },
-              correctAnswerArray: { type: Type.ARRAY, items: { type: Type.STRING }, description: "For RANKING only (correct order)." }
+              correctAnswerArray: { type: Type.ARRAY, items: { type: Type.STRING }, description: "For RANKING only (correct order). Must match strings in 'options' exactly." }
           },
           required: ["type", "text", "explanation"]
       };
@@ -284,6 +296,7 @@ const App = () => {
         2. **Comprehensive**: Cover the provided material evenly.
         3. **Educational**: Explanations must reference the logic used.
         4. **Parsing**: Ensure you fill the correct fields for the chosen question type.
+        5. **RANKING**: Ensure 'correctAnswerArray' uses the EXACT SAME STRINGS as 'options'.
 
         Output pure JSON matching the schema.
       `;
@@ -375,7 +388,11 @@ const App = () => {
            else if (Array.isArray(q.correctAnswer)) finalAnswer = q.correctAnswer;
            else if (Array.isArray(q.answer)) finalAnswer = q.answer;
            
-           if (!finalAnswer) finalAnswer = [];
+           if (!finalAnswer || finalAnswer.length === 0) {
+               // Fallback: If Ranking answer is missing, use options (this makes it a freebie, but prevents broken UI)
+               console.warn("Missing correct answer for Ranking question", q);
+               finalAnswer = q.options || []; 
+           }
         }
         else {
            // MULTIPLE_CHOICE
@@ -473,10 +490,10 @@ const App = () => {
         // String comparison for robustness
         isCorrect = String(answer).toLowerCase() === String(question.correctAnswer).toLowerCase();
     } else if (question.type === 'RANKING') {
-        // Compare arrays
+        // Use robust array checking
         const correctArr = question.correctAnswer as string[];
         const userArr = answer as string[];
-        isCorrect = JSON.stringify(correctArr) === JSON.stringify(userArr);
+        isCorrect = isRankingCorrect(correctArr, userArr);
     }
 
     const newAnswer: UserAnswer = {
@@ -955,14 +972,27 @@ const App = () => {
                                   Confirm Order
                                 </button>
                             )}
-                            {isAnswered && (
+                            {isAnswered && !currentAnswer?.isCorrect && (
                                 <div className="mt-4 p-4 bg-blue-50 rounded-xl border border-blue-100">
-                                    <p className="text-xs font-bold text-blue-800 uppercase mb-2">Correct Order:</p>
-                                    <ol className="list-decimal list-inside space-y-1">
-                                        {(question.correctAnswer as string[]).map((item, idx) => (
-                                            <li key={idx} className="text-sm text-blue-900">{item}</li>
-                                        ))}
-                                    </ol>
+                                    <p className="text-xs font-bold text-blue-800 uppercase mb-2">Correct Order vs Your Order:</p>
+                                    <div className="grid grid-cols-2 gap-4">
+                                      <div>
+                                          <div className="text-xs text-red-500 font-semibold mb-1">Your Order</div>
+                                          <ol className="list-decimal list-inside space-y-1">
+                                            {(currentAnswer?.answer as string[]).map((item, idx) => (
+                                                <li key={idx} className="text-xs text-gray-600">{item}</li>
+                                            ))}
+                                          </ol>
+                                      </div>
+                                      <div>
+                                          <div className="text-xs text-green-600 font-semibold mb-1">Correct Order</div>
+                                          <ol className="list-decimal list-inside space-y-1">
+                                            {(question.correctAnswer as string[] || []).map((item, idx) => (
+                                                <li key={idx} className="text-xs text-gray-800 font-medium">{item}</li>
+                                            ))}
+                                          </ol>
+                                      </div>
+                                    </div>
                                 </div>
                             )}
                           </div>
@@ -1082,9 +1112,18 @@ const App = () => {
                             const isCorrect = userAnswer?.isCorrect;
 
                             // Helper to format answer for display
-                            const formatAnswer = (ans: any) => {
+                            const renderAnswer = (ans: any) => {
                                 if (q.type === 'TRUE_FALSE') return ans ? "True" : "False";
-                                if (Array.isArray(ans)) return ans.join(" → ");
+                                if (Array.isArray(ans)) {
+                                  // For ranking, render a vertical list
+                                  return (
+                                    <ol className="list-decimal list-inside space-y-1 mt-1">
+                                      {ans.map((item: string, idx: number) => (
+                                        <li key={idx} className="text-xs">{item}</li>
+                                      ))}
+                                    </ol>
+                                  );
+                                }
                                 return String(ans);
                             };
 
@@ -1108,12 +1147,12 @@ const App = () => {
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 text-sm">
                                         <div className={`p-3 rounded-lg ${isCorrect ? 'bg-green-50 text-green-900' : 'bg-red-50 text-red-900'}`}>
                                             <span className="block text-xs opacity-70 mb-1 font-semibold uppercase">Your Answer</span>
-                                            <span className="font-medium">{userAnswer ? formatAnswer(userAnswer.answer) : "Skipped"}</span>
+                                            <div className="font-medium">{userAnswer ? renderAnswer(userAnswer.answer) : "Skipped"}</div>
                                         </div>
                                         {!isCorrect && (
                                             <div className="p-3 rounded-lg bg-blue-50 text-blue-900">
                                                 <span className="block text-xs opacity-70 mb-1 font-semibold uppercase">Correct Answer</span>
-                                                <span className="font-medium">{formatAnswer(q.correctAnswer)}</span>
+                                                <div className="font-medium">{renderAnswer(q.correctAnswer)}</div>
                                             </div>
                                         )}
                                     </div>
