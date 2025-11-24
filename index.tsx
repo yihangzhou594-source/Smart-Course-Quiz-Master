@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Trash2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download, Activity } from 'lucide-react';
+import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Trash2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download, Activity, Mic, Eraser } from 'lucide-react';
 
 // --- Globals ---
 declare const JSZip: any;
@@ -135,7 +135,8 @@ const App = () => {
   const [quizState, setQuizState] = useState<QuizState>('SETUP');
   
   // Content State
-  const [pptText, setPptText] = useState('');
+  const [materialText, setMaterialText] = useState('');
+  const [transcriptText, setTranscriptText] = useState('');
   
   // Settings State
   const [config, setConfig] = useState<QuizConfig>({
@@ -174,8 +175,8 @@ const App = () => {
   // --- Gemini Logic ---
 
   const generateQuiz = async () => {
-    if (!pptText.trim()) {
-      setError("Please provide content (Text, PPTX, DOCX, or VTT) to generate questions.");
+    if (!materialText.trim() && !transcriptText.trim()) {
+      setError("Please provide content (Materials or Transcripts) to generate questions.");
       return;
     }
 
@@ -188,8 +189,15 @@ const App = () => {
       
       const parts: any[] = [];
       
-      // We only send text now
-      parts.push({ text: `Here is the text content extracted from the user's files (Slides, Docs, Transcripts):\n\n${pptText}` });
+      const fullContent = `
+=== VISUAL MATERIALS (Slides/Docs) ===
+${materialText}
+
+=== VERBAL TRANSCRIPT (Speech) ===
+${transcriptText}
+      `;
+
+      parts.push({ text: `Here is the combined content extracted from the user's files:\n\n${fullContent}` });
       
       // Dynamic Prompt Construction
       let taskDescription = "";
@@ -287,7 +295,7 @@ const App = () => {
         You are a strict university-level exam creator.
         
         TASK:
-        Analyze the provided content.
+        Analyze the provided content (both visuals and transcripts).
         ${config.enableSummary ? "First, extract key concepts." : ""}
         Then, ${taskDescription}
         
@@ -389,7 +397,7 @@ const App = () => {
            else if (Array.isArray(q.answer)) finalAnswer = q.answer;
            
            if (!finalAnswer || finalAnswer.length === 0) {
-               // Fallback: If Ranking answer is missing, use options (this makes it a freebie, but prevents broken UI)
+               // Fallback: If Ranking answer is missing, use options
                console.warn("Missing correct answer for Ranking question", q);
                finalAnswer = q.options || []; 
            }
@@ -432,7 +440,7 @@ const App = () => {
 
   // --- Handlers ---
 
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleMaterialUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files) return;
 
@@ -440,46 +448,67 @@ const App = () => {
     setError(null);
 
     try {
-      let newText = pptText;
+      let newText = "";
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         const lowerName = file.name.toLowerCase();
         
-        // --- File Processing ---
-        
         if (lowerName.endsWith('.pptx')) {
-           const extracted = await extractTextFromPPTX(file);
-           newText += `\n${extracted}\n`;
+           newText += await extractTextFromPPTX(file);
         } else if (lowerName.endsWith('.docx')) {
-           const extracted = await extractTextFromDOCX(file);
-           newText += `\n${extracted}\n`;
-        } else if (lowerName.endsWith('.vtt')) {
-           const raw = await file.text();
-           const clean = cleanVTT(raw);
-           newText += `\n[Transcript from ${file.name}]:\n${clean}\n`;
+           newText += await extractTextFromDOCX(file);
         } else if (lowerName.endsWith('.txt') || lowerName.endsWith('.md')) {
-           const text = await file.text();
-           newText += `\n${text}\n`;
+           newText += `\n[Document: ${file.name}]\n${await file.text()}\n`;
         } else {
-           // Fallback for unknown text types, try to read as text
-           try {
-             const text = await file.text();
-             newText += `\n[File ${file.name}]:\n${text}\n`;
-           } catch (e) {
-             console.warn("Could not read file", file.name);
-           }
+             // Try fallback as text for unknown but accepted types in this bucket
+             try {
+                newText += `\n[File: ${file.name}]\n${await file.text()}\n`;
+             } catch(e) {}
         }
       }
-
-      setPptText(newText);
-
+      setMaterialText(prev => prev + "\n" + newText);
     } catch (err) {
        console.error(err);
-       setError("Error processing files. Please ensure they are valid.");
+       setError("Error processing material files.");
     } finally {
        setIsProcessingFile(false);
     }
+  };
+
+  const handleTranscriptUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files) return;
+
+    setIsProcessingFile(true);
+    setError(null);
+
+    try {
+      let newText = "";
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const lowerName = file.name.toLowerCase();
+        
+        let rawText = await file.text();
+        if (lowerName.endsWith('.vtt')) {
+           rawText = cleanVTT(rawText);
+        }
+        
+        newText += `\n[Transcript: ${file.name}]\n${rawText}\n`;
+      }
+      setTranscriptText(prev => prev + "\n" + newText);
+    } catch (err) {
+       console.error(err);
+       setError("Error processing transcript files.");
+    } finally {
+       setIsProcessingFile(false);
+    }
+  };
+
+  const handleCleanTranscript = () => {
+    if (!transcriptText) return;
+    setTranscriptText(cleanVTT(transcriptText));
   };
 
   const handleAnswer = (answer: any) => {
@@ -515,7 +544,8 @@ const App = () => {
 
   const resetQuiz = () => {
     setQuizState('SETUP');
-    setPptText('');
+    setMaterialText('');
+    setTranscriptText('');
     setQuestions([]);
     setQuizSummary([]);
     setUserAnswers([]);
@@ -640,7 +670,7 @@ const App = () => {
       <>
         {renderStats()}
         <div className="min-h-screen flex items-center justify-center p-6 fade-in">
-          <div className="max-w-3xl w-full bg-white rounded-2xl shadow-xl overflow-hidden">
+          <div className="max-w-6xl w-full bg-white rounded-2xl shadow-xl overflow-hidden">
             <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-8 text-white">
               <div className="flex items-center gap-3 mb-2">
                 <Brain className="w-8 h-8" />
@@ -652,44 +682,90 @@ const App = () => {
             <div className="p-8 space-y-8">
               {/* Input Section */}
               <div className="space-y-4">
-                <label className="block text-sm font-medium text-gray-700">1. Upload Content</label>
+                <label className="block text-sm font-medium text-gray-700">1. Upload Content Sources (Simultaneous)</label>
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="relative border-2 border-dashed border-gray-300 rounded-xl p-6 flex flex-col items-center justify-center text-center hover:border-blue-500 transition-colors bg-gray-50 group cursor-pointer">
-                    <input 
-                      type="file" 
-                      multiple 
-                      accept=".pptx,.docx,.txt,.vtt,.md"
-                      onChange={handleFileUpload}
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                    />
-                    <div className="bg-white p-3 rounded-full shadow-sm mb-3 group-hover:scale-110 transition-transform">
-                      <Upload className="w-6 h-6 text-blue-600" />
-                    </div>
-                    <p className="text-sm font-semibold text-gray-900">Upload Documents</p>
-                    <p className="text-xs text-gray-500 mt-1">PPTX, DOCX, VTT, TXT</p>
-                  </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Left Column: Visual Materials */}
+                    <div className="space-y-3">
+                        <div className="flex items-center gap-2 pb-2 border-b border-gray-100">
+                            <FileText className="w-5 h-5 text-blue-600" />
+                            <h3 className="font-semibold text-gray-800">Presentation Materials</h3>
+                        </div>
+                        
+                        <div className="relative border-2 border-dashed border-gray-300 rounded-xl p-4 flex flex-col items-center justify-center text-center hover:border-blue-500 transition-colors bg-gray-50 group cursor-pointer h-24">
+                            <input 
+                            type="file" 
+                            multiple 
+                            accept=".pptx,.docx,.txt,.md"
+                            onChange={handleMaterialUpload}
+                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                            />
+                            <div className="flex items-center gap-2">
+                                <Upload className="w-5 h-5 text-gray-500 group-hover:text-blue-600 transition-colors" />
+                                <span className="text-sm font-medium text-gray-600 group-hover:text-blue-600">Upload PPTX, DOCX, TXT</span>
+                            </div>
+                        </div>
 
-                  <div className="border border-gray-200 rounded-xl p-4 bg-gray-50 flex flex-col h-[500px]">
-                    <textarea
-                      className="flex-1 bg-transparent border-none resize-none focus:ring-0 text-sm p-0 mb-2"
-                      placeholder="Or paste text notes / prompt here..."
-                      value={pptText}
-                      onChange={(e) => setPptText(e.target.value)}
-                    />
-                    <div className="text-xs text-gray-400 flex justify-between">
-                      <span>{pptText.length} chars</span>
-                      <FileText className="w-4 h-4" />
+                        <div className="border border-gray-200 rounded-xl p-3 bg-gray-50 flex flex-col h-[400px]">
+                            <textarea
+                            className="flex-1 bg-transparent border-none resize-none focus:ring-0 text-sm p-2 custom-scrollbar focus:outline-none"
+                            placeholder="Or paste slide content / notes here..."
+                            value={materialText}
+                            onChange={(e) => setMaterialText(e.target.value)}
+                            />
+                            <div className="text-xs text-gray-400 flex justify-between px-2 pt-2 border-t border-gray-200">
+                                <span>{materialText.length} chars</span>
+                                {materialText.length > 0 && <CheckCircle className="w-3 h-3 text-green-500" />}
+                            </div>
+                        </div>
                     </div>
-                  </div>
+
+                    {/* Right Column: Verbal Transcript */}
+                    <div className="space-y-3">
+                        <div className="flex items-center justify-between pb-2 border-b border-gray-100">
+                            <div className="flex items-center gap-2">
+                                <Mic className="w-5 h-5 text-purple-600" />
+                                <h3 className="font-semibold text-gray-800">Verbal Transcript / VTT</h3>
+                            </div>
+                            {transcriptText.length > 0 && (
+                                <button 
+                                    onClick={handleCleanTranscript}
+                                    className="text-xs flex items-center gap-1 text-purple-600 hover:text-purple-800 hover:bg-purple-50 px-2 py-1 rounded transition-colors"
+                                    title="Remove timestamps and headers"
+                                >
+                                    <Eraser className="w-3 h-3" /> Clean VTT
+                                </button>
+                            )}
+                        </div>
+
+                        <div className="relative border-2 border-dashed border-gray-300 rounded-xl p-4 flex flex-col items-center justify-center text-center hover:border-purple-500 transition-colors bg-gray-50 group cursor-pointer h-24">
+                            <input 
+                            type="file" 
+                            multiple 
+                            accept=".vtt,.txt,.md"
+                            onChange={handleTranscriptUpload}
+                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                            />
+                            <div className="flex items-center gap-2">
+                                <Upload className="w-5 h-5 text-gray-500 group-hover:text-purple-600 transition-colors" />
+                                <span className="text-sm font-medium text-gray-600 group-hover:text-purple-600">Upload VTT, Transcript</span>
+                            </div>
+                        </div>
+
+                        <div className="border border-gray-200 rounded-xl p-3 bg-gray-50 flex flex-col h-[400px]">
+                            <textarea
+                            className="flex-1 bg-transparent border-none resize-none focus:ring-0 text-sm p-2 custom-scrollbar focus:outline-none"
+                            placeholder="Paste VTT or speech transcript here..."
+                            value={transcriptText}
+                            onChange={(e) => setTranscriptText(e.target.value)}
+                            />
+                            <div className="text-xs text-gray-400 flex justify-between px-2 pt-2 border-t border-gray-200">
+                                <span>{transcriptText.length} chars</span>
+                                {transcriptText.length > 0 && <CheckCircle className="w-3 h-3 text-green-500" />}
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                
-                {/* File Status Indicator */}
-                {pptText.length > 500 && (
-                    <div className="text-xs text-green-600 font-medium flex items-center gap-1 bg-green-50 p-2 rounded">
-                        <CheckCircle className="w-3 h-3" /> Content loaded successfully
-                    </div>
-                )}
               </div>
 
               {/* Config Section */}
