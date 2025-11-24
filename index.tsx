@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Trash2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download, Activity, Mic, Eraser, Settings2 } from 'lucide-react';
+import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Trash2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download, Activity, Mic, Eraser, Settings2, GripVertical } from 'lucide-react';
 
 // --- Globals ---
 declare const JSZip: any;
@@ -182,6 +182,7 @@ const App = () => {
   
   // Ranking Interaction State
   const [rankingOrder, setRankingOrder] = useState<string[]>([]);
+  const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
 
   // Stats State
   const [usageStats, setUsageStats] = useState<UsageStats>({ requests: 0, inputTokens: 0, outputTokens: 0 });
@@ -599,6 +600,31 @@ ${transcriptText}
     const swapIndex = direction === 'up' ? index - 1 : index + 1;
     [newOrder[index], newOrder[swapIndex]] = [newOrder[swapIndex], newOrder[index]];
     setRankingOrder(newOrder);
+  };
+
+  // --- Drag and Drop Handlers ---
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    setDraggedItemIndex(index);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    if (draggedItemIndex === null) return;
+    if (draggedItemIndex === index) return;
+    
+    const newOrder = [...rankingOrder];
+    const draggedItem = newOrder[draggedItemIndex];
+    
+    newOrder.splice(draggedItemIndex, 1);
+    newOrder.splice(index, 0, draggedItem);
+    
+    setRankingOrder(newOrder);
+    setDraggedItemIndex(index);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedItemIndex(null);
   };
 
   const handleExportMistakes = () => {
@@ -1074,22 +1100,45 @@ ${transcriptText}
                       ) : (
                           // Ranking Question UI
                           <div className="space-y-4">
-                            <p className="text-sm text-gray-500 italic mb-2">Use the arrows to arrange items in the correct order:</p>
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="text-sm text-gray-500 italic">
+                                    Drag and drop items or use arrows to reorder:
+                                </span>
+                            </div>
+                            
                             <div className="space-y-2">
                                   {(isAnswered ? (currentAnswer?.answer as string[]) : rankingOrder).map((item, i) => (
-                                      <div key={i} className={`p-3 rounded-xl border-2 flex items-center justify-between transition-all ${isAnswered ? 'bg-gray-50 border-gray-200' : 'bg-white border-gray-200 hover:border-blue-300'}`}>
+                                      <div 
+                                        key={item} 
+                                        draggable={!isAnswered}
+                                        onDragStart={(e) => !isAnswered && handleDragStart(e, i)}
+                                        onDragOver={(e) => !isAnswered && handleDragOver(e, i)}
+                                        onDragEnd={handleDragEnd}
+                                        className={`p-3 rounded-xl border-2 flex items-center justify-between transition-all 
+                                            ${isAnswered ? 'bg-gray-50 border-gray-200' : 
+                                              draggedItemIndex === i ? 'bg-blue-50 border-blue-400 opacity-80 scale-[1.02] shadow-lg z-10' : 'bg-white border-gray-200 hover:border-blue-300 hover:shadow-sm'}
+                                            ${!isAnswered ? 'cursor-grab active:cursor-grabbing' : ''}
+                                        `}
+                                      >
                                           <div className="flex items-center gap-3">
-                                              <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-sm font-bold text-gray-500">
+                                              {!isAnswered && (
+                                                <div className="text-gray-400 cursor-grab active:cursor-grabbing">
+                                                    <GripVertical className="w-5 h-5" />
+                                                </div>
+                                              )}
+                                              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 ${isAnswered ? 'bg-gray-100 text-gray-500' : 'bg-blue-100 text-blue-600'}`}>
                                                   {i + 1}
                                               </div>
-                                              <span className="font-medium text-gray-700">{item}</span>
+                                              <span className="font-medium text-gray-700 select-none">{item}</span>
                                           </div>
+                                          
                                           {!isAnswered && (
                                               <div className="flex flex-col gap-1">
                                                   <button 
                                                       onClick={() => moveRankItem(i, 'up')}
                                                       disabled={i === 0}
                                                       className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-blue-600 disabled:opacity-30"
+                                                      title="Move Up"
                                                   >
                                                       <ArrowUp className="w-4 h-4" />
                                                   </button>
@@ -1097,6 +1146,7 @@ ${transcriptText}
                                                       onClick={() => moveRankItem(i, 'down')}
                                                       disabled={i === rankingOrder.length - 1}
                                                       className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-blue-600 disabled:opacity-30"
+                                                      title="Move Down"
                                                   >
                                                       <ArrowDown className="w-4 h-4" />
                                                   </button>
