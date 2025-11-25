@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { Upload, FileText, CheckCircle, XCircle, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, Trash2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download, Activity, Mic, Eraser, Settings2, GripVertical } from 'lucide-react';
+import { GoogleGenAI, Type } from "@google/genai";
+import { Upload, FileText, CircleCheck, CircleX, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download, Activity, Mic, Eraser, Settings2, GripVertical, CircleHelp, Filter, Target } from 'lucide-react';
 
 // --- Globals ---
 declare const JSZip: any;
+declare const pdfjsLib: any;
 
 // --- Types ---
 
@@ -25,7 +26,7 @@ type SummaryConcept = {
   points: string[];
 };
 
-type QuizState = 'SETUP' | 'GENERATING' | 'KNOWLEDGE' | 'PLAYING' | 'SUMMARY' | 'REVIEW';
+type QuizState = 'SETUP' | 'TOPIC_SELECTION' | 'GENERATING' | 'KNOWLEDGE' | 'PLAYING' | 'SUMMARY' | 'REVIEW';
 
 type UserAnswer = {
   questionId: number;
@@ -37,6 +38,7 @@ type QuizConfig = {
   type: QuestionType;
   count: number;
   enableSummary: boolean;
+  enableTopicFilter: boolean;
 };
 
 type UsageStats = {
@@ -145,6 +147,30 @@ const extractTextFromDOCX = async (file: File): Promise<string> => {
     }
 };
 
+const extractTextFromPDF = async (file: File): Promise<string> => {
+    try {
+        const arrayBuffer = await file.arrayBuffer();
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        const pdf = await loadingTask.promise;
+        
+        let fullText = `[File: ${file.name}]\n`;
+        
+        for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const textContent = await page.getTextContent();
+            // textContent.items contains objects with 'str' property
+            const pageText = textContent.items.map((item: any) => item.str).join(' ');
+            if (pageText.trim()) {
+                fullText += `[Page ${i}]: ${pageText}\n`;
+            }
+        }
+        return fullText;
+    } catch (e) {
+        console.error("PDF Parse Error", e);
+        return `[Error parsing ${file.name}. Please ensure it is a text-based PDF.]\n`;
+    }
+};
+
 // Robust Array Comparison
 const isRankingCorrect = (correct: string[], answer: string[]): boolean => {
     if (!Array.isArray(correct) || !Array.isArray(answer)) return false;
@@ -169,8 +195,14 @@ const App = () => {
   const [config, setConfig] = useState<QuizConfig>({
     type: 'MIXED',
     count: 15,
-    enableSummary: true
+    enableSummary: true,
+    enableTopicFilter: false
   });
+
+  // Topic Selection State
+  const [availableTopics, setAvailableTopics] = useState<string[]>([]);
+  const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
+  const [isAnalyzingTopics, setIsAnalyzingTopics] = useState(false);
 
   // Quiz Data State
   const [quizSummary, setQuizSummary] = useState<SummaryConcept[]>([]);
@@ -184,9 +216,13 @@ const App = () => {
   const [rankingOrder, setRankingOrder] = useState<string[]>([]);
   const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
 
-  // Stats State
+  // Stats & Info State
   const [usageStats, setUsageStats] = useState<UsageStats>({ requests: 0, inputTokens: 0, outputTokens: 0 });
   const [isStatsOpen, setIsStatsOpen] = useState(false);
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
+
+  // Focus management ref
+  const mainContainerRef = useRef<HTMLDivElement>(null);
 
   // --- Effects ---
 
@@ -200,7 +236,79 @@ const App = () => {
     }
   }, [currentQuestionIndex, questions]);
 
+  // Focus main container on state change for accessibility
+  useEffect(() => {
+    if (mainContainerRef.current) {
+        mainContainerRef.current.focus();
+    }
+  }, [quizState]);
+
   // --- Gemini Logic ---
+
+  const extractTopics = async () => {
+    if (!materialText.trim() && !transcriptText.trim()) {
+        setError("Please provide content to scan for topics.");
+        return;
+    }
+
+    setIsAnalyzingTopics(true);
+    setError(null);
+
+    try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const parts: any[] = [];
+        const fullContent = `=== VISUAL MATERIALS ===\n${materialText}\n=== TRANSCRIPT ===\n${transcriptText}`;
+        parts.push({ text: `Analyze the following content and list 8-15 distinct main topics, chapters, or themes covered. Content:\n\n${fullContent}` });
+
+        const schema = {
+            type: Type.OBJECT,
+            properties: {
+                topics: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: "List of topics/chapters found in the content."
+                }
+            },
+            required: ["topics"]
+        };
+
+        const response = await ai.models.generateContent({
+            model: MODEL_NAME,
+            contents: { parts },
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: schema,
+                systemInstruction: "You are a content analyzer. Extract high-level topics or chapter titles from the material. Keep topic names concise (under 8 words)."
+            }
+        });
+
+        // Track Usage
+        const usage = response.usageMetadata;
+        if (usage) {
+            setUsageStats(prev => ({
+                requests: prev.requests + 1,
+                inputTokens: prev.inputTokens + (usage.promptTokenCount || 0),
+                outputTokens: prev.outputTokens + (usage.candidatesTokenCount || 0)
+            }));
+        }
+
+        const data = JSON.parse(response.text || "{}");
+        if (data.topics && Array.isArray(data.topics)) {
+            setAvailableTopics(data.topics);
+            // Default select all
+            setSelectedTopics(data.topics);
+            setQuizState('TOPIC_SELECTION');
+        } else {
+            throw new Error("Could not identify topics.");
+        }
+
+    } catch (err: any) {
+        console.error(err);
+        setError("Failed to analyze topics. You can try generating the full quiz without filtering.");
+    } finally {
+        setIsAnalyzingTopics(false);
+    }
+  };
 
   const generateQuiz = async () => {
     if (!materialText.trim() && !transcriptText.trim()) {
@@ -225,7 +333,14 @@ ${materialText}
 ${transcriptText}
       `;
 
-      parts.push({ text: `Here is the combined content extracted from the user's files:\n\n${fullContent}` });
+      let contextPrompt = `Here is the combined content extracted from the user's files:\n\n${fullContent}`;
+      
+      // Add topic filtering instruction if enabled
+      if (config.enableTopicFilter && selectedTopics.length > 0) {
+          contextPrompt += `\n\n*** IMPORTANT: SCOPE RESTRICTION ***\nFocus the questions and summary SPECIFICALLY on the following selected topics. Ignore other unrelated content unless necessary for context.\nSELECTED TOPICS: ${selectedTopics.join(', ')}\n`;
+      }
+
+      parts.push({ text: contextPrompt });
       
       // Dynamic Prompt Construction
       let taskDescription = "";
@@ -306,7 +421,7 @@ ${transcriptText}
           required: ["type", "text", "explanation"]
       };
 
-      let finalSchema: Schema;
+      let finalSchema: any;
 
       if (config.enableSummary) {
         finalSchema = {
@@ -509,6 +624,8 @@ ${transcriptText}
            newText += await extractTextFromPPTX(file);
         } else if (lowerName.endsWith('.docx')) {
            newText += await extractTextFromDOCX(file);
+        } else if (lowerName.endsWith('.pdf')) {
+           newText += await extractTextFromPDF(file);
         } else if (lowerName.endsWith('.txt') || lowerName.endsWith('.md')) {
            newText += `\n[Document: ${file.name}]\n${await file.text()}\n`;
         } else {
@@ -521,7 +638,7 @@ ${transcriptText}
       setMaterialText(prev => prev + "\n" + newText);
     } catch (err) {
        console.error(err);
-       setError("Error processing material files.");
+       setError("Error processing material files. Note: Scanned PDFs (images) are not supported yet.");
     } finally {
        setIsProcessingFile(false);
     }
@@ -601,6 +718,8 @@ ${transcriptText}
     setQuizSummary([]);
     setUserAnswers([]);
     setCurrentQuestionIndex(0);
+    setAvailableTopics([]);
+    setSelectedTopics([]);
   };
 
   const moveRankItem = (index: number, direction: 'up' | 'down') => {
@@ -674,26 +793,127 @@ ${transcriptText}
     URL.revokeObjectURL(url);
   };
 
+  const toggleTopicSelection = (topic: string) => {
+      setSelectedTopics(prev => {
+          if (prev.includes(topic)) {
+              return prev.filter(t => t !== topic);
+          } else {
+              return [...prev, topic];
+          }
+      });
+  };
+
   // --- Common UI ---
+
+  const renderInfoModal = () => (
+    <>
+      <button
+        onClick={() => setIsInfoOpen(true)}
+        className="fixed top-4 right-16 z-50 bg-white/90 backdrop-blur p-2 rounded-full shadow-md hover:shadow-lg border border-gray-200 text-gray-600 transition-all hover:text-blue-600"
+        title="About & How it Works"
+        aria-label="About this app"
+      >
+        <CircleHelp className="w-5 h-5" aria-hidden="true" />
+      </button>
+
+      {isInfoOpen && (
+        <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm fade-in"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="info-title"
+        >
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full mx-4 overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+            <div className="bg-gray-900 text-white p-4 flex justify-between items-center flex-shrink-0">
+              <h3 id="info-title" className="font-bold flex items-center gap-2">
+                <Brain className="w-5 h-5" aria-hidden="true" /> About Gemini Quiz Master
+              </h3>
+              <button
+                onClick={() => setIsInfoOpen(false)}
+                className="hover:bg-gray-800 p-1 rounded-full transition-colors"
+                aria-label="Close info modal"
+              >
+                <X className="w-5 h-5" aria-hidden="true" />
+              </button>
+            </div>
+            
+            <div className="p-6 overflow-y-auto custom-scrollbar">
+                <div className="space-y-6">
+                    <section>
+                        <h4 className="text-lg font-bold text-gray-900 mb-2 flex items-center gap-2">
+                            <Sparkles className="w-4 h-4 text-amber-500" /> How it Works
+                        </h4>
+                        <ol className="list-decimal list-inside space-y-2 text-sm text-gray-600">
+                            <li><strong>Upload Materials:</strong> Drop your lecture slides (PPTX), notes (DOCX/PDF), or transcripts (VTT).</li>
+                            <li><strong>AI Analysis:</strong> The app sends the text to Google's <strong>Gemini 2.5 Flash</strong> model.</li>
+                            <li><strong>Generation:</strong> The AI extracts key concepts and creates challenging questions designed to test deep understanding, using techniques like concept swapping and specific distractor generation.</li>
+                            <li><strong>Review:</strong> Take the quiz, get instant feedback, and review a summary of key concepts.</li>
+                        </ol>
+                    </section>
+
+                    <section>
+                        <h4 className="text-lg font-bold text-gray-900 mb-2 flex items-center gap-2">
+                            <AlertCircle className="w-4 h-4 text-red-500" /> Limitations
+                        </h4>
+                        <ul className="list-disc list-inside space-y-2 text-sm text-gray-600">
+                            <li><strong>Text Only:</strong> The app currently processes text-based files. It cannot "see" images or diagrams inside your slides or scanned PDFs yet.</li>
+                            <li><strong>AI Accuracy:</strong> While Gemini is powerful, it can occasionally "hallucinate" or misinterpret specific context. Always verify with your source material.</li>
+                            <li><strong>File Size:</strong> Extremely large files might hit browser memory limits or API token limits.</li>
+                        </ul>
+                    </section>
+
+                    <section>
+                        <h4 className="text-lg font-bold text-gray-900 mb-2">Technicals</h4>
+                        <p className="text-sm text-gray-600">
+                            Powered by <strong>Google Gemini API</strong> (Gemini 2.5 Flash). Files are processed locally in your browser to extract text, then that text is sent securely to the API for processing. Your files are not stored on our servers.
+                        </p>
+                    </section>
+                </div>
+            </div>
+            
+            <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-end flex-shrink-0">
+                <button 
+                    onClick={() => setIsInfoOpen(false)}
+                    className="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-black transition-colors"
+                >
+                    Got it
+                </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+
   const renderStats = () => (
     <>
       <button 
         onClick={() => setIsStatsOpen(true)}
         className="fixed top-4 right-4 z-50 bg-white/90 backdrop-blur p-2 rounded-full shadow-md hover:shadow-lg border border-gray-200 text-gray-600 transition-all hover:text-blue-600"
         title="Session API Usage"
+        aria-label="Session API Usage Stats"
       >
-        <Activity className="w-5 h-5" />
+        <Activity className="w-5 h-5" aria-hidden="true" />
       </button>
 
       {isStatsOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm fade-in">
+        <div 
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm fade-in"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="stats-title"
+        >
           <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full mx-4 overflow-hidden animate-in zoom-in-95 duration-200">
             <div className="bg-gray-900 text-white p-4 flex justify-between items-center">
-              <h3 className="font-bold flex items-center gap-2">
-                <Activity className="w-5 h-5" /> Session Usage Stats
+              <h3 id="stats-title" className="font-bold flex items-center gap-2">
+                <Activity className="w-5 h-5" aria-hidden="true" /> Session Usage Stats
               </h3>
-              <button onClick={() => setIsStatsOpen(false)} className="hover:bg-gray-800 p-1 rounded-full transition-colors">
-                <X className="w-5 h-5" />
+              <button 
+                onClick={() => setIsStatsOpen(false)} 
+                className="hover:bg-gray-800 p-1 rounded-full transition-colors"
+                aria-label="Close stats"
+              >
+                <X className="w-5 h-5" aria-hidden="true" />
               </button>
             </div>
             <div className="p-6 space-y-4">
@@ -744,12 +964,13 @@ ${transcriptText}
   if (quizState === 'SETUP') {
     return (
       <>
+        {renderInfoModal()}
         {renderStats()}
-        <div className="min-h-screen flex items-center justify-center p-6 fade-in">
+        <div className="min-h-screen flex items-center justify-center p-6 fade-in" ref={mainContainerRef} tabIndex={-1}>
           <div className="max-w-6xl w-full bg-white rounded-2xl shadow-xl overflow-hidden">
             <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-8 text-white">
               <div className="flex items-center gap-3 mb-2">
-                <Brain className="w-8 h-8" />
+                <Brain className="w-8 h-8" aria-hidden="true" />
                 <h1 className="text-3xl font-bold">Gemini Quiz Master</h1>
               </div>
               <p className="opacity-90">Upload lecture content to generate a university-grade quiz.</p>
@@ -764,34 +985,36 @@ ${transcriptText}
                     {/* Left Column: Visual Materials */}
                     <div className="space-y-3">
                         <div className="flex items-center gap-2 pb-2 border-b border-gray-100">
-                            <FileText className="w-5 h-5 text-blue-600" />
+                            <FileText className="w-5 h-5 text-blue-600" aria-hidden="true" />
                             <h3 className="font-semibold text-gray-800">Presentation Materials</h3>
                         </div>
                         
-                        <div className="relative border-2 border-dashed border-gray-300 rounded-xl p-4 flex flex-col items-center justify-center text-center hover:border-blue-500 transition-colors bg-gray-50 group cursor-pointer h-24">
+                        <div className="relative border-2 border-dashed border-gray-300 rounded-xl p-4 flex flex-col items-center justify-center text-center hover:border-blue-500 transition-colors bg-gray-50 group cursor-pointer h-24 focus-within:ring-2 focus-within:ring-blue-500 focus-within:ring-offset-2">
                             <input 
-                            type="file" 
-                            multiple 
-                            accept=".pptx,.docx,.txt,.md"
-                            onChange={handleMaterialUpload}
-                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                type="file" 
+                                multiple 
+                                accept=".pptx,.docx,.pdf,.txt,.md"
+                                onChange={handleMaterialUpload}
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                aria-label="Upload Presentation Materials (PPTX, DOCX, PDF, TXT)"
                             />
                             <div className="flex items-center gap-2">
-                                <Upload className="w-5 h-5 text-gray-500 group-hover:text-blue-600 transition-colors" />
-                                <span className="text-sm font-medium text-gray-600 group-hover:text-blue-600">Upload PPTX, DOCX, TXT</span>
+                                <Upload className="w-5 h-5 text-gray-500 group-hover:text-blue-600 transition-colors" aria-hidden="true" />
+                                <span className="text-sm font-medium text-gray-600 group-hover:text-blue-600">Upload PPTX, PDF, DOCX, TXT</span>
                             </div>
                         </div>
 
                         <div className="border border-gray-200 rounded-xl p-3 bg-gray-50 flex flex-col h-[500px]">
                             <textarea
-                            className="flex-1 bg-transparent border-none resize-none focus:ring-0 text-sm p-2 custom-scrollbar focus:outline-none"
-                            placeholder="Or paste slide content / notes here..."
-                            value={materialText}
-                            onChange={(e) => setMaterialText(e.target.value)}
+                                className="flex-1 bg-transparent border-none resize-none focus:ring-0 text-sm p-2 custom-scrollbar focus:outline-none"
+                                placeholder="Or paste slide content / notes here..."
+                                value={materialText}
+                                onChange={(e) => setMaterialText(e.target.value)}
+                                aria-label="Paste presentation text content"
                             />
                             <div className="text-xs text-gray-400 flex justify-between px-2 pt-2 border-t border-gray-200">
                                 <span>{materialText.length} chars</span>
-                                {materialText.length > 0 && <CheckCircle className="w-3 h-3 text-green-500" />}
+                                {materialText.length > 0 && <CircleCheck className="w-3 h-3 text-green-500" aria-hidden="true" />}
                             </div>
                         </div>
                     </div>
@@ -800,7 +1023,7 @@ ${transcriptText}
                     <div className="space-y-3">
                         <div className="flex items-center justify-between pb-2 border-b border-gray-100">
                             <div className="flex items-center gap-2">
-                                <Mic className="w-5 h-5 text-purple-600" />
+                                <Mic className="w-5 h-5 text-purple-600" aria-hidden="true" />
                                 <h3 className="font-semibold text-gray-800">Verbal Transcript / VTT</h3>
                             </div>
                             {transcriptText.length > 0 && (
@@ -808,36 +1031,39 @@ ${transcriptText}
                                     onClick={handleCleanTranscript}
                                     className="text-xs flex items-center gap-1 text-purple-600 hover:text-purple-800 hover:bg-purple-50 px-2 py-1 rounded transition-colors"
                                     title="Remove timestamps and headers"
+                                    aria-label="Clean VTT Timestamps"
                                 >
-                                    <Eraser className="w-3 h-3" /> Clean VTT
+                                    <Eraser className="w-3 h-3" aria-hidden="true" /> Clean VTT
                                 </button>
                             )}
                         </div>
 
-                        <div className="relative border-2 border-dashed border-gray-300 rounded-xl p-4 flex flex-col items-center justify-center text-center hover:border-purple-500 transition-colors bg-gray-50 group cursor-pointer h-24">
+                        <div className="relative border-2 border-dashed border-gray-300 rounded-xl p-4 flex flex-col items-center justify-center text-center hover:border-purple-500 transition-colors bg-gray-50 group cursor-pointer h-24 focus-within:ring-2 focus-within:ring-purple-500 focus-within:ring-offset-2">
                             <input 
-                            type="file" 
-                            multiple 
-                            accept=".vtt,.txt,.md"
-                            onChange={handleTranscriptUpload}
-                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                type="file" 
+                                multiple 
+                                accept=".vtt,.txt,.md"
+                                onChange={handleTranscriptUpload}
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                aria-label="Upload Transcript Files (VTT, TXT)"
                             />
                             <div className="flex items-center gap-2">
-                                <Upload className="w-5 h-5 text-gray-500 group-hover:text-purple-600 transition-colors" />
+                                <Upload className="w-5 h-5 text-gray-500 group-hover:text-purple-600 transition-colors" aria-hidden="true" />
                                 <span className="text-sm font-medium text-gray-600 group-hover:text-purple-600">Upload VTT, Transcript</span>
                             </div>
                         </div>
 
                         <div className="border border-gray-200 rounded-xl p-3 bg-gray-50 flex flex-col h-[500px]">
                             <textarea
-                            className="flex-1 bg-transparent border-none resize-none focus:ring-0 text-sm p-2 custom-scrollbar focus:outline-none"
-                            placeholder="Paste VTT or speech transcript here..."
-                            value={transcriptText}
-                            onChange={(e) => setTranscriptText(e.target.value)}
+                                className="flex-1 bg-transparent border-none resize-none focus:ring-0 text-sm p-2 custom-scrollbar focus:outline-none"
+                                placeholder="Paste VTT or speech transcript here..."
+                                value={transcriptText}
+                                onChange={(e) => setTranscriptText(e.target.value)}
+                                aria-label="Paste transcript text content"
                             />
                             <div className="text-xs text-gray-400 flex justify-between px-2 pt-2 border-t border-gray-200">
                                 <span>{transcriptText.length} chars</span>
-                                {transcriptText.length > 0 && <CheckCircle className="w-3 h-3 text-green-500" />}
+                                {transcriptText.length > 0 && <CircleCheck className="w-3 h-3 text-green-500" aria-hidden="true" />}
                             </div>
                         </div>
                     </div>
@@ -846,14 +1072,20 @@ ${transcriptText}
 
               {/* Config Section */}
               <div className="space-y-4">
-                <label className="block text-sm font-medium text-gray-700">2. Configure Quiz</label>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <label className="block text-sm font-medium text-gray-700" id="quiz-type-label">2. Configure Quiz</label>
+                <div 
+                    className="grid grid-cols-1 md:grid-cols-3 gap-4" 
+                    role="radiogroup" 
+                    aria-labelledby="quiz-type-label"
+                >
                   <button 
                     onClick={() => setConfig(prev => ({...prev, type: 'MIXED'}))}
-                    className={`p-4 rounded-xl border-2 text-left transition-all ${config.type === 'MIXED' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
+                    className={`p-4 rounded-xl border-2 text-left transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 ${config.type === 'MIXED' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
+                    role="radio"
+                    aria-checked={config.type === 'MIXED'}
                   >
                     <div className="flex items-center gap-2 mb-1">
-                      <Shuffle className={`w-5 h-5 ${config.type === 'MIXED' ? 'text-blue-600' : 'text-gray-400'}`} />
+                      <Shuffle className={`w-5 h-5 ${config.type === 'MIXED' ? 'text-blue-600' : 'text-gray-400'}`} aria-hidden="true" />
                       <span className="font-semibold text-sm">Mixed Mode</span>
                     </div>
                     <p className="text-xs text-gray-500">MCQ, T/F, & Ranking</p>
@@ -861,10 +1093,12 @@ ${transcriptText}
                   
                   <button 
                     onClick={() => setConfig(prev => ({...prev, type: 'MULTIPLE_CHOICE'}))}
-                    className={`p-4 rounded-xl border-2 text-left transition-all ${config.type === 'MULTIPLE_CHOICE' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
+                    className={`p-4 rounded-xl border-2 text-left transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 ${config.type === 'MULTIPLE_CHOICE' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
+                    role="radio"
+                    aria-checked={config.type === 'MULTIPLE_CHOICE'}
                   >
                     <div className="flex items-center gap-2 mb-1">
-                      <ListChecks className={`w-5 h-5 ${config.type === 'MULTIPLE_CHOICE' ? 'text-blue-600' : 'text-gray-400'}`} />
+                      <ListChecks className={`w-5 h-5 ${config.type === 'MULTIPLE_CHOICE' ? 'text-blue-600' : 'text-gray-400'}`} aria-hidden="true" />
                       <span className="font-semibold text-sm">Multiple Choice</span>
                     </div>
                     <p className="text-xs text-gray-500">Standard 4 options</p>
@@ -872,10 +1106,12 @@ ${transcriptText}
 
                   <button 
                     onClick={() => setConfig(prev => ({...prev, type: 'TRUE_FALSE'}))}
-                    className={`p-4 rounded-xl border-2 text-left transition-all ${config.type === 'TRUE_FALSE' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
+                    className={`p-4 rounded-xl border-2 text-left transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 ${config.type === 'TRUE_FALSE' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-200 hover:border-gray-300'}`}
+                    role="radio"
+                    aria-checked={config.type === 'TRUE_FALSE'}
                   >
                     <div className="flex items-center gap-2 mb-1">
-                      <ToggleLeft className={`w-5 h-5 ${config.type === 'TRUE_FALSE' ? 'text-blue-600' : 'text-gray-400'}`} />
+                      <ToggleLeft className={`w-5 h-5 ${config.type === 'TRUE_FALSE' ? 'text-blue-600' : 'text-gray-400'}`} aria-hidden="true" />
                       <span className="font-semibold text-sm">True / False</span>
                     </div>
                     <p className="text-xs text-gray-500">Hard Mode & Nuance</p>
@@ -886,21 +1122,25 @@ ${transcriptText}
                 <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
                   <div className="flex justify-between items-center mb-2">
                     <div className="flex items-center gap-2">
-                        <Settings2 className="w-4 h-4 text-gray-500" />
-                        <label className="text-sm font-medium text-gray-700">Question Quantity</label>
+                        <Settings2 className="w-4 h-4 text-gray-500" aria-hidden="true" />
+                        <label htmlFor="question-count-slider" className="text-sm font-medium text-gray-700">Question Quantity</label>
                     </div>
                     <span className="text-blue-600 font-bold bg-white border border-blue-100 px-3 py-0.5 rounded-lg text-sm shadow-sm">{config.count} Questions</span>
                   </div>
                   <input 
+                    id="question-count-slider"
                     type="range" 
                     min="15" 
                     max="50" 
                     step="1"
                     value={config.count}
                     onChange={(e) => setConfig({...config, count: parseInt(e.target.value)})}
-                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600 hover:bg-gray-300 transition-colors"
+                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600 hover:bg-gray-300 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    aria-valuemin={15}
+                    aria-valuemax={50}
+                    aria-valuenow={config.count}
                   />
-                  <div className="flex justify-between text-xs text-gray-400 mt-2 px-1 font-medium">
+                  <div className="flex justify-between text-xs text-gray-400 mt-2 px-1 font-medium" aria-hidden="true">
                     <span>15</span>
                     <span>25</span>
                     <span>35</span>
@@ -908,42 +1148,66 @@ ${transcriptText}
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-200">
-                  <div className="flex items-center gap-3">
-                    <Sparkles className="w-5 h-5 text-amber-500" />
-                    <div>
-                      <span className="block text-sm font-medium text-gray-900">Generate Key Concepts Summary</span>
-                      <span className="block text-xs text-gray-500">Get a study guide before the quiz</span>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-200">
+                    <div className="flex items-center gap-3">
+                      <Sparkles className="w-5 h-5 text-amber-500" aria-hidden="true" />
+                      <div>
+                        <span className="block text-sm font-medium text-gray-900" id="summary-label">Generate Summary</span>
+                        <span className="block text-xs text-gray-500">Key concepts study guide</span>
+                      </div>
                     </div>
+                    <button 
+                      onClick={() => setConfig({...config, enableSummary: !config.enableSummary})}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500 ${config.enableSummary ? 'bg-blue-600' : 'bg-gray-200'}`}
+                      role="switch"
+                      aria-checked={config.enableSummary}
+                      aria-labelledby="summary-label"
+                    >
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition transition-transform ${config.enableSummary ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
                   </div>
-                  <button 
-                    onClick={() => setConfig({...config, enableSummary: !config.enableSummary})}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${config.enableSummary ? 'bg-blue-600' : 'bg-gray-200'}`}
-                  >
-                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition transition-transform ${config.enableSummary ? 'translate-x-6' : 'translate-x-1'}`} />
-                  </button>
+
+                  <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-200">
+                    <div className="flex items-center gap-3">
+                      <Target className="w-5 h-5 text-indigo-500" aria-hidden="true" />
+                      <div>
+                        <span className="block text-sm font-medium text-gray-900" id="topic-filter-label">Filter by Topic</span>
+                        <span className="block text-xs text-gray-500">Select specific chapters</span>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={() => setConfig({...config, enableTopicFilter: !config.enableTopicFilter})}
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 ${config.enableTopicFilter ? 'bg-indigo-600' : 'bg-gray-200'}`}
+                      role="switch"
+                      aria-checked={config.enableTopicFilter}
+                      aria-labelledby="topic-filter-label"
+                    >
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition transition-transform ${config.enableTopicFilter ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
                 </div>
               </div>
 
               {error && (
-                <div className="p-4 bg-red-50 text-red-700 rounded-xl flex items-center gap-3 text-sm">
-                  <AlertCircle className="w-5 h-5 flex-shrink-0" />
+                <div className="p-4 bg-red-50 text-red-700 rounded-xl flex items-center gap-3 text-sm" role="alert">
+                  <AlertCircle className="w-5 h-5 flex-shrink-0" aria-hidden="true" />
                   {error}
                 </div>
               )}
 
               <button
-                onClick={generateQuiz}
-                disabled={isProcessingFile}
-                className="w-full py-4 bg-gray-900 hover:bg-black text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                onClick={config.enableTopicFilter ? extractTopics : generateQuiz}
+                disabled={isProcessingFile || isAnalyzingTopics}
+                className={`w-full py-4 text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 focus:outline-none focus:ring-4 ${config.enableTopicFilter ? 'bg-indigo-600 hover:bg-indigo-700 focus:ring-indigo-400' : 'bg-gray-900 hover:bg-black focus:ring-gray-400'}`}
               >
-                {isProcessingFile ? (
+                {isProcessingFile || isAnalyzingTopics ? (
                   <>
-                      <Loader2 className="w-5 h-5 animate-spin" /> Processing Documents...
+                      <Loader2 className="w-5 h-5 animate-spin" aria-hidden="true" /> {isAnalyzingTopics ? "Scanning Topics..." : "Processing Documents..."}
                   </>
                 ) : (
                   <>
-                      Generate Quiz <ChevronRight className="w-5 h-5" />
+                      {config.enableTopicFilter ? "Scan Content for Topics" : "Generate Quiz"} <ChevronRight className="w-5 h-5" aria-hidden="true" />
                   </>
                 )}
               </button>
@@ -954,12 +1218,93 @@ ${transcriptText}
     );
   }
 
+  if (quizState === 'TOPIC_SELECTION') {
+      return (
+        <>
+            {renderInfoModal()}
+            {renderStats()}
+            <div className="min-h-screen flex items-center justify-center p-6 fade-in" ref={mainContainerRef} tabIndex={-1}>
+                <div className="max-w-4xl w-full bg-white rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]">
+                    <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-white sticky top-0 z-10">
+                        <div>
+                            <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                                <Filter className="w-5 h-5 text-indigo-600" aria-hidden="true" /> Select Topics
+                            </h2>
+                            <p className="text-sm text-gray-500">Choose which areas to focus the quiz on.</p>
+                        </div>
+                        <div className="flex gap-2">
+                            <button 
+                                onClick={() => setSelectedTopics(availableTopics)}
+                                className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                            >
+                                Select All
+                            </button>
+                            <button 
+                                onClick={() => setSelectedTopics([])}
+                                className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                            >
+                                Clear
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto p-6 bg-gray-50 custom-scrollbar">
+                         {availableTopics.length === 0 ? (
+                             <div className="text-center py-12 text-gray-500">
+                                 <AlertCircle className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                                 No distinct topics found. Please try generating the full quiz.
+                             </div>
+                         ) : (
+                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3" role="group" aria-label="Topics found in content">
+                                 {availableTopics.map((topic, i) => {
+                                     const isSelected = selectedTopics.includes(topic);
+                                     return (
+                                         <button
+                                             key={i}
+                                             onClick={() => toggleTopicSelection(topic)}
+                                             className={`p-4 rounded-xl border-2 text-left transition-all flex items-start gap-3 focus:outline-none focus:ring-2 focus:ring-offset-1 ${isSelected ? 'bg-indigo-50 border-indigo-500 shadow-sm focus:ring-indigo-500' : 'bg-white border-gray-200 hover:border-gray-300 text-gray-600 focus:ring-gray-400'}`}
+                                             role="checkbox"
+                                             aria-checked={isSelected}
+                                         >
+                                             <div className={`mt-0.5 w-5 h-5 rounded border flex items-center justify-center transition-colors ${isSelected ? 'bg-indigo-600 border-indigo-600' : 'bg-white border-gray-300'}`}>
+                                                 {isSelected && <Check className="w-3.5 h-3.5 text-white" />}
+                                             </div>
+                                             <span className={`font-medium ${isSelected ? 'text-indigo-900' : 'text-gray-700'}`}>{topic}</span>
+                                         </button>
+                                     );
+                                 })}
+                             </div>
+                         )}
+                    </div>
+
+                    <div className="p-4 border-t border-gray-100 bg-white flex justify-between items-center flex-shrink-0">
+                        <button 
+                            onClick={() => setQuizState('SETUP')}
+                            className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-colors flex items-center gap-2"
+                        >
+                            <ArrowLeft className="w-4 h-4" /> Back
+                        </button>
+                        <button 
+                            onClick={generateQuiz}
+                            disabled={selectedTopics.length === 0}
+                            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-bold transition-colors flex items-center gap-2 shadow-lg shadow-indigo-200"
+                        >
+                            Generate Quiz ({selectedTopics.length}) <Play className="w-4 h-4 fill-current" />
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </>
+      );
+  }
+
   if (quizState === 'GENERATING') {
     return (
       <>
+        {renderInfoModal()}
         {renderStats()}
-        <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center fade-in">
-          <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-6" />
+        <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center fade-in" role="status" aria-live="polite">
+          <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-6" aria-hidden="true" />
           <h2 className="text-2xl font-bold text-gray-800 mb-2">Analyzing Content with Gemini 2.5</h2>
           <p className="text-gray-500 max-w-md">Reading slides, notes, and transcripts to extract key insights and challenge your knowledge...</p>
         </div>
@@ -970,21 +1315,22 @@ ${transcriptText}
   if (quizState === 'KNOWLEDGE') {
     return (
       <>
+        {renderInfoModal()}
         {renderStats()}
-        <div className="min-h-screen flex items-center justify-center p-6 fade-in">
+        <div className="min-h-screen flex items-center justify-center p-6 fade-in" ref={mainContainerRef} tabIndex={-1}>
           <div className="max-w-4xl w-full bg-white rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]">
               <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50">
                   <div>
                       <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                          <BookOpen className="w-5 h-5 text-blue-600" /> Key Concepts
+                          <BookOpen className="w-5 h-5 text-blue-600" aria-hidden="true" /> Key Concepts
                       </h2>
                       <p className="text-sm text-gray-500">Review these points before starting the quiz.</p>
                   </div>
                   <button 
                     onClick={() => setQuizState('PLAYING')}
-                    className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
+                    className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors flex items-center gap-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
                   >
-                    Start Quiz <Play className="w-4 h-4 fill-current" />
+                    Start Quiz <Play className="w-4 h-4 fill-current" aria-hidden="true" />
                   </button>
               </div>
               
@@ -993,13 +1339,13 @@ ${transcriptText}
                       {quizSummary.map((concept, i) => (
                           <div key={i} className="bg-gray-50 rounded-xl p-5 border border-gray-100 hover:shadow-md transition-shadow">
                               <div className="flex items-center gap-3 mb-3 border-b border-gray-200 pb-2">
-                                  <span className="text-2xl">{concept.emoji}</span>
+                                  <span className="text-2xl" role="img" aria-label="concept icon">{concept.emoji}</span>
                                   <h3 className="font-bold text-gray-800">{concept.title}</h3>
                               </div>
                               <ul className="space-y-2">
                                   {concept.points.map((point, j) => (
                                       <li key={j} className="text-sm text-gray-600 flex items-start gap-2">
-                                          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0" />
+                                          <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0" aria-hidden="true" />
                                           <span>{point}</span>
                                       </li>
                                   ))}
@@ -1021,11 +1367,12 @@ ${transcriptText}
 
     return (
       <>
+        {renderInfoModal()}
         {renderStats()}
-        <div className="min-h-screen flex items-center justify-center p-6 fade-in">
+        <div className="min-h-screen flex items-center justify-center p-6 fade-in" ref={mainContainerRef} tabIndex={-1}>
           <div className="max-w-2xl w-full bg-white rounded-2xl shadow-xl overflow-hidden">
               {/* Progress Bar */}
-              <div className="h-2 bg-gray-100 w-full">
+              <div className="h-2 bg-gray-100 w-full" role="progressbar" aria-valuenow={currentQuestionIndex + 1} aria-valuemin={1} aria-valuemax={questions.length}>
                   <div 
                       className="h-full bg-blue-600 transition-all duration-300" 
                       style={{ width: `${((currentQuestionIndex + 1) / questions.length) * 100}%` }}
@@ -1038,7 +1385,7 @@ ${transcriptText}
                       <span className="text-xs font-bold tracking-wider text-blue-600 uppercase bg-blue-50 px-3 py-1 rounded-full">
                           {question.type.replace('_', ' ')}
                       </span>
-                      <span className="text-sm font-medium text-gray-400">
+                      <span className="text-sm font-medium text-gray-400" aria-label={`Question ${currentQuestionIndex + 1} of ${questions.length}`}>
                           {currentQuestionIndex + 1} / {questions.length}
                       </span>
                   </div>
@@ -1056,7 +1403,7 @@ ${transcriptText}
                                   const isSelected = currentAnswer?.answer === val;
                                   const isCorrect = question.correctAnswer === val;
                                   
-                                  let btnClass = "py-6 rounded-xl border-2 font-semibold text-lg transition-all flex items-center justify-center gap-2 ";
+                                  let btnClass = "py-6 rounded-xl border-2 font-semibold text-lg transition-all flex items-center justify-center gap-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ";
                                   
                                   if (isAnswered) {
                                       if (isCorrect) btnClass += "bg-green-100 border-green-500 text-green-700";
@@ -1072,6 +1419,7 @@ ${transcriptText}
                                           disabled={isAnswered}
                                           onClick={() => handleAnswer(val)}
                                           className={btnClass}
+                                          aria-pressed={isSelected}
                                       >
                                           {val ? "True" : "False"}
                                       </button>
@@ -1084,7 +1432,7 @@ ${transcriptText}
                                   const isSelected = currentAnswer?.answer === opt;
                                   const isCorrect = question.correctAnswer === opt;
                                   
-                                  let btnClass = "w-full p-4 rounded-xl border-2 text-left font-medium transition-all flex items-center justify-between ";
+                                  let btnClass = "w-full p-4 rounded-xl border-2 text-left font-medium transition-all flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ";
 
                                   if (isAnswered) {
                                       if (isCorrect) btnClass += "bg-green-50 border-green-500 text-green-800";
@@ -1100,10 +1448,11 @@ ${transcriptText}
                                           disabled={isAnswered}
                                           onClick={() => handleAnswer(opt)}
                                           className={btnClass}
+                                          aria-pressed={isSelected}
                                       >
                                           <span>{opt}</span>
-                                          {isAnswered && isCorrect && <CheckCircle className="w-5 h-5 text-green-600" />}
-                                          {isAnswered && isSelected && !isCorrect && <XCircle className="w-5 h-5 text-red-500" />}
+                                          {isAnswered && isCorrect && <CircleCheck className="w-5 h-5 text-green-600" aria-hidden="true" />}
+                                          {isAnswered && isSelected && !isCorrect && <CircleX className="w-5 h-5 text-red-500" aria-hidden="true" />}
                                       </button>
                                   );
                               })}
@@ -1117,9 +1466,9 @@ ${transcriptText}
                                 </span>
                             </div>
                             
-                            <div className="space-y-2">
+                            <ul className="space-y-2" aria-label="Ranking Options. Use arrow buttons to reorder.">
                                   {(isAnswered ? (currentAnswer?.answer as string[]) : rankingOrder).map((item, i) => (
-                                      <div 
+                                      <li 
                                         key={item} 
                                         draggable={!isAnswered}
                                         onDragStart={(e) => !isAnswered && handleDragStart(e, i)}
@@ -1133,7 +1482,7 @@ ${transcriptText}
                                       >
                                           <div className="flex items-center gap-3">
                                               {!isAnswered && (
-                                                <div className="text-gray-400 cursor-grab active:cursor-grabbing">
+                                                <div className="text-gray-400 cursor-grab active:cursor-grabbing" aria-hidden="true">
                                                     <GripVertical className="w-5 h-5" />
                                                 </div>
                                               )}
@@ -1148,34 +1497,36 @@ ${transcriptText}
                                                   <button 
                                                       onClick={() => moveRankItem(i, 'up')}
                                                       disabled={i === 0}
-                                                      className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-blue-600 disabled:opacity-30"
+                                                      className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-blue-600 disabled:opacity-30 focus:outline-none focus:ring-2 focus:ring-blue-500"
                                                       title="Move Up"
+                                                      aria-label={`Move ${item} up`}
                                                   >
-                                                      <ArrowUp className="w-4 h-4" />
+                                                      <ArrowUp className="w-4 h-4" aria-hidden="true" />
                                                   </button>
                                                   <button 
                                                       onClick={() => moveRankItem(i, 'down')}
                                                       disabled={i === rankingOrder.length - 1}
-                                                      className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-blue-600 disabled:opacity-30"
+                                                      className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-blue-600 disabled:opacity-30 focus:outline-none focus:ring-2 focus:ring-blue-500"
                                                       title="Move Down"
+                                                      aria-label={`Move ${item} down`}
                                                   >
-                                                      <ArrowDown className="w-4 h-4" />
+                                                      <ArrowDown className="w-4 h-4" aria-hidden="true" />
                                                   </button>
                                               </div>
                                           )}
-                                      </div>
+                                      </li>
                                   ))}
-                            </div>
+                            </ul>
                             {!isAnswered && (
                                 <button 
                                   onClick={() => handleAnswer(rankingOrder)}
-                                  className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors mt-4"
+                                  className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-colors mt-4 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
                                 >
                                   Confirm Order
                                 </button>
                             )}
                             {isAnswered && !currentAnswer?.isCorrect && (
-                                <div className="mt-4 p-4 bg-blue-50 rounded-xl border border-blue-100">
+                                <div className="mt-4 p-4 bg-blue-50 rounded-xl border border-blue-100" role="status">
                                     <p className="text-xs font-bold text-blue-800 uppercase mb-2">Correct Order vs Your Order:</p>
                                     <div className="grid grid-cols-2 gap-4">
                                       <div>
@@ -1203,10 +1554,10 @@ ${transcriptText}
 
                   {/* Feedback / Next */}
                   {isAnswered && (
-                      <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
+                      <div className="animate-in fade-in slide-in-from-bottom-4 duration-300" role="alert">
                           <div className={`p-4 rounded-xl mb-6 ${currentAnswer?.isCorrect ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
                               <div className="flex items-start gap-3">
-                                  <Info className={`w-5 h-5 mt-0.5 ${currentAnswer?.isCorrect ? 'text-green-600' : 'text-red-600'}`} />
+                                  <Info className={`w-5 h-5 mt-0.5 ${currentAnswer?.isCorrect ? 'text-green-600' : 'text-red-600'}`} aria-hidden="true" />
                                   <div>
                                       <p className={`font-bold text-sm mb-1 ${currentAnswer?.isCorrect ? 'text-green-800' : 'text-red-800'}`}>
                                           {currentAnswer?.isCorrect ? 'Correct!' : 'Incorrect'}
@@ -1220,9 +1571,9 @@ ${transcriptText}
                           
                           <button 
                               onClick={nextQuestion}
-                              className="w-full py-4 bg-gray-900 text-white rounded-xl font-bold hover:bg-black transition-colors flex items-center justify-center gap-2"
+                              className="w-full py-4 bg-gray-900 text-white rounded-xl font-bold hover:bg-black transition-colors flex items-center justify-center gap-2 focus:outline-none focus:ring-4 focus:ring-gray-400"
                           >
-                              {currentQuestionIndex === questions.length - 1 ? "Finish Quiz" : "Next Question"} <ChevronRight className="w-5 h-5" />
+                              {currentQuestionIndex === questions.length - 1 ? "Finish Quiz" : "Next Question"} <ChevronRight className="w-5 h-5" aria-hidden="true" />
                           </button>
                       </div>
                   )}
@@ -1240,12 +1591,13 @@ ${transcriptText}
 
     return (
       <>
+        {renderInfoModal()}
         {renderStats()}
-        <div className="min-h-screen flex items-center justify-center p-6 fade-in">
+        <div className="min-h-screen flex items-center justify-center p-6 fade-in" ref={mainContainerRef} tabIndex={-1}>
           <div className="max-w-md w-full bg-white rounded-2xl shadow-xl overflow-hidden text-center p-8">
               <div className="mb-6 flex justify-center">
                   <div className="w-24 h-24 rounded-full bg-blue-50 flex items-center justify-center relative">
-                      <svg className="w-full h-full -rotate-90" viewBox="0 0 36 36">
+                      <svg className="w-full h-full -rotate-90" viewBox="0 0 36 36" aria-hidden="true">
                           <path className="text-blue-100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3" />
                           <path className="text-blue-600" strokeDasharray={`${percentage}, 100`} d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3" />
                       </svg>
@@ -1263,25 +1615,25 @@ ${transcriptText}
               <div className="space-y-3">
                   <button 
                     onClick={() => setQuizState('REVIEW')}
-                    className="w-full py-3 bg-white border-2 border-gray-200 text-gray-700 rounded-xl font-semibold hover:border-blue-500 hover:text-blue-600 transition-colors flex items-center justify-center gap-2"
+                    className="w-full py-3 bg-white border-2 border-gray-200 text-gray-700 rounded-xl font-semibold hover:border-blue-500 hover:text-blue-600 transition-colors flex items-center justify-center gap-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
                   >
-                    <Eye className="w-4 h-4" /> Review Answers
+                    <Eye className="w-4 h-4" aria-hidden="true" /> Review Answers
                   </button>
 
                   {hasMistakes && (
                       <button 
                         onClick={handleExportMistakes}
-                        className="w-full py-3 bg-white border-2 border-red-200 text-red-700 rounded-xl font-semibold hover:border-red-400 hover:bg-red-50 transition-colors flex items-center justify-center gap-2"
+                        className="w-full py-3 bg-white border-2 border-red-200 text-red-700 rounded-xl font-semibold hover:border-red-400 hover:bg-red-50 transition-colors flex items-center justify-center gap-2 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
                       >
-                        <Download className="w-4 h-4" /> Export Wrong Questions
+                        <Download className="w-4 h-4" aria-hidden="true" /> Export Wrong Questions
                       </button>
                   )}
 
                   <button 
                     onClick={resetQuiz}
-                    className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-black transition-colors flex items-center justify-center gap-2"
+                    className="w-full py-3 bg-gray-900 text-white rounded-xl font-semibold hover:bg-black transition-colors flex items-center justify-center gap-2 focus:outline-none focus:ring-4 focus:ring-gray-400"
                   >
-                    <RefreshCw className="w-4 h-4" /> Create New Quiz
+                    <RefreshCw className="w-4 h-4" aria-hidden="true" /> Create New Quiz
                   </button>
               </div>
           </div>
@@ -1293,17 +1645,18 @@ ${transcriptText}
   if (quizState === 'REVIEW') {
       return (
           <>
+            {renderInfoModal()}
             {renderStats()}
-            <div className="min-h-screen bg-gray-50 p-6 fade-in">
+            <div className="min-h-screen bg-gray-50 p-6 fade-in" ref={mainContainerRef} tabIndex={-1}>
                 <div className="max-w-3xl mx-auto space-y-6">
                     {/* Header */}
                     <div className="bg-white rounded-2xl p-6 shadow-sm flex items-center justify-between sticky top-6 z-10">
                         <h2 className="text-xl font-bold text-gray-900">Quiz Review</h2>
                         <button 
                           onClick={() => setQuizState('SUMMARY')}
-                          className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                          className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 focus:outline-none focus:ring-2 focus:ring-gray-400"
                         >
-                            <ArrowLeft className="w-4 h-4" /> Back to Summary
+                            <ArrowLeft className="w-4 h-4" aria-hidden="true" /> Back to Summary
                         </button>
                     </div>
 
@@ -1335,11 +1688,11 @@ ${transcriptText}
                                         <span className="text-xs font-bold text-gray-400 uppercase tracking-wide">Question {i + 1}</span>
                                         {isCorrect ? (
                                             <div className="flex items-center gap-1 text-green-600 text-xs font-bold uppercase bg-green-50 px-2 py-1 rounded-full">
-                                                <Check className="w-3 h-3" /> Correct
+                                                <Check className="w-3 h-3" aria-hidden="true" /> Correct
                                             </div>
                                         ) : (
                                             <div className="flex items-center gap-1 text-red-600 text-xs font-bold uppercase bg-red-50 px-2 py-1 rounded-full">
-                                                <X className="w-3 h-3" /> Incorrect
+                                                <X className="w-3 h-3" aria-hidden="true" /> Incorrect
                                             </div>
                                         )}
                                     </div>
@@ -1361,7 +1714,7 @@ ${transcriptText}
 
                                     <div className="bg-gray-50 p-4 rounded-xl">
                                         <div className="flex items-start gap-2">
-                                            <Info className="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" />
+                                            <Info className="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" aria-hidden="true" />
                                             <p className="text-sm text-gray-600 leading-relaxed">{q.explanation}</p>
                                         </div>
                                     </div>
