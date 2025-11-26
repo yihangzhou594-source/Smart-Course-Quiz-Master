@@ -1118,34 +1118,51 @@ ${transcriptText}
                   </button>
                 </div>
                 
-                {/* Question Count Slider */}
+                {/* Question Quantity Selection */}
                 <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
-                  <div className="flex justify-between items-center mb-2">
-                    <div className="flex items-center gap-2">
-                        <Settings2 className="w-4 h-4 text-gray-500" aria-hidden="true" />
-                        <label htmlFor="question-count-slider" className="text-sm font-medium text-gray-700">Question Quantity</label>
+                  <div className="flex items-center gap-2 mb-3">
+                      <Settings2 className="w-4 h-4 text-gray-500" aria-hidden="true" />
+                      <label className="text-sm font-medium text-gray-700">Question Quantity</label>
+                  </div>
+                  
+                  <div className="flex flex-wrap items-center gap-3">
+                    {[5, 10, 15, 20, 30].map(num => (
+                      <button
+                        key={num}
+                        onClick={() => setConfig({...config, count: num})}
+                        className={`px-3 py-2 rounded-lg text-sm font-bold transition-all border-2 flex-1 sm:flex-none ${
+                          config.count === num 
+                            ? 'bg-blue-600 text-white border-blue-600 shadow-md transform scale-105' 
+                            : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300 hover:text-blue-600'
+                        }`}
+                      >
+                        {num}
+                      </button>
+                    ))}
+                    
+                    <div className="relative w-24">
+                      <input
+                        type="number"
+                        min="1"
+                        max="50"
+                        value={config.count}
+                        onChange={(e) => {
+                          let val = parseInt(e.target.value);
+                          if (isNaN(val)) val = 0;
+                          if (val > 50) val = 50;
+                          if (val < 0) val = 1;
+                          if (val > 0) setConfig({...config, count: val});
+                        }}
+                        className="w-full px-3 py-2 rounded-lg border-2 border-gray-200 text-center font-bold text-gray-700 focus:border-blue-500 focus:outline-none transition-colors"
+                      />
+                      <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[10px] text-gray-400 pointer-events-none uppercase font-semibold mr-1">
+                        Qty
+                      </span>
                     </div>
-                    <span className="text-blue-600 font-bold bg-white border border-blue-100 px-3 py-0.5 rounded-lg text-sm shadow-sm">{config.count} Questions</span>
                   </div>
-                  <input 
-                    id="question-count-slider"
-                    type="range" 
-                    min="15" 
-                    max="50" 
-                    step="1"
-                    value={config.count}
-                    onChange={(e) => setConfig({...config, count: parseInt(e.target.value)})}
-                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600 hover:bg-gray-300 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    aria-valuemin={15}
-                    aria-valuemax={50}
-                    aria-valuenow={config.count}
-                  />
-                  <div className="flex justify-between text-xs text-gray-400 mt-2 px-1 font-medium" aria-hidden="true">
-                    <span>15</span>
-                    <span>25</span>
-                    <span>35</span>
-                    <span>50</span>
-                  </div>
+                  <p className="text-xs text-gray-500 mt-2">
+                    Select a preset or type a custom amount (1-50).
+                  </p>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
