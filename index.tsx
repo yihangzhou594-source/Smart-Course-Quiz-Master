@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleGenAI, Type } from "@google/genai";
-import { Upload, FileText, CircleCheck, CircleX, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download, Activity, Mic, Eraser, GripVertical, CircleHelp, Filter, Target } from 'lucide-react';
+import { Upload, FileText, CircleCheck, CircleX, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download, Activity, Mic, Eraser, GripVertical, CircleHelp, Filter, Target, History, Clock } from 'lucide-react';
 
 // --- Globals ---
 declare const JSZip: any;
 declare const pdfjsLib: any;
+const SRS_STORAGE_KEY = 'gemini_quiz_srs_data_v1';
 
 // --- Types ---
 
@@ -18,6 +19,14 @@ type Question = {
   options?: string[]; // MCQ options OR Ranking items (scrambled)
   correctAnswer: boolean | string | string[]; // Boolean for T/F, String for MCQ, String[] for Ranking (correct order)
   explanation: string;
+};
+
+type SRSItem = {
+  id: string; // Hash of the question text
+  question: Question;
+  nextReview: number; // Timestamp
+  interval: number; // Current interval in days
+  repetition: number; // Number of successful recalls
 };
 
 type SummaryConcept = {
@@ -182,6 +191,18 @@ const isRankingCorrect = (correct: string[], answer: string[]): boolean => {
     return correct.every((item, index) => normalize(item) === normalize(answer[index]));
 };
 
+// Simple Hash for SRS IDs
+const generateHash = (str: string) => {
+  let hash = 0;
+  if (str.length === 0) return '0';
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(16);
+};
+
 // --- Components ---
 
 const App = () => {
@@ -221,10 +242,18 @@ const App = () => {
   const [isStatsOpen, setIsStatsOpen] = useState(false);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
 
+  // SRS State
+  const [srsDueCount, setSrsDueCount] = useState(0);
+
   // Focus management ref
   const mainContainerRef = useRef<HTMLDivElement>(null);
 
   // --- Effects ---
+
+  // Load SRS stats on mount
+  useEffect(() => {
+    updateSRSStats();
+  }, [quizState]);
 
   // Initialize ranking order when a ranking question appears
   useEffect(() => {
@@ -354,19 +383,26 @@ ${transcriptText}
         taskDescription = `
           Create exactly ${config.count} "True or False" judgment questions.
           
-          *** CRITICAL STYLE INSTRUCTIONS (HARD MODE) ***
-          The user wants challenging "trick" questions that test deep understanding and attention to detail.
+          *** STYLE GUIDE: ACADEMIC & CLINICAL PRECISION ***
+          Generate questions that test specific mechanisms, absolute qualifiers, and classification nuance. Use the following logical patterns:
           
-          GENERATE QUESTIONS USING THESE PATTERNS:
-          1. **Concept Swapping**: Take a definition of Concept A but name it Concept B. (e.g. "The Law of Segregation states that alleles of different genes segregate independently" -> FALSE, that is Independent Assortment).
-          2. **Detail Reversal**: Change a specific detail in a factual sentence. (e.g. "Hydrogen ions are pumped to the matrix" -> FALSE, they are pumped to the intermembrane space).
-          3. **Exceptions & Footnotes**: Use content specifically found in the "SPEAKER NOTES" or footnotes. (e.g. "RBCs contain mitochondria" -> FALSE, notes say they don't).
-          4. **Cis vs Trans / Alpha vs Beta**: Swap opposing terms.
+          1. **The "Absolute" Trap**: Use absolute qualifiers ("always", "never", "all", "only") to create statements that are *almost* true but technically false due to exceptions found in the text.
+             - Example: "Infection by pathogenic microbes *always* results in disease." -> FALSE (Infection does not always equal disease).
+             - Example: "Not *all* parasites are harmful to the host." -> TRUE.
+             
+          2. **Mechanism Location & Direction**: Swap the specific location or direction of a biological/technical process.
+             - Example: "Restriction endonucleases cut DNA at the *ends* of the molecule." -> FALSE (They cut internal phosphodiester bonds; exonucleases cut ends).
+             - Example: "Hydrogen ions are pumped *into* the matrix." -> FALSE (They are pumped out to the intermembrane space).
+             
+          3. **Attribute Misattribution**: Attribute a specific property (like accuracy, speed, or origin) to a related but incorrect subject.
+             - Example: "Sanger sequencing has *low accuracy*." -> FALSE (It has high accuracy, but low throughput).
+             - Example: "The blue veins in cheese are caused by bacteria." -> FALSE (Caused by a fungus/mold).
+             
+          4. **Definition Precision**: Define a term using the definition of a *closely related* term.
           
           REQUIREMENTS:
-          - Approximately 50-60% of answers should be FALSE (these are better for learning).
-          - The Explanation must clearly state WHY it is false and correct the specific error.
-          - Questions must be challenging (>30% error rate style).
+          - Aim for a 50/50 split of True and False answers.
+          - The Explanation must explicitly state *why* it is false by correcting the specific error (e.g., "False. Restriction enzymes cut internally; Exonucleases cut at the ends.").
         `;
       } else if (config.type === 'MULTIPLE_CHOICE') {
         taskDescription = `
@@ -394,11 +430,10 @@ ${transcriptText}
           1. Mostly Multiple Choice (MCQ) and True/False (T/F).
           2. **RANKING/SORTING Questions**: Include MAX 1-2 ranking questions.
              - ONLY generate a Ranking question if the content involves a clear sequential process, timeline, steps, or hierarchy.
-             - If no such content exists, do NOT force a Ranking question; use MCQ instead.
           
           TYPES:
-          - TRUE_FALSE: Challenging boolean judgment (use 'Hard Mode' style: swapping concepts, trick details).
-          - MULTIPLE_CHOICE: 4 options. **CRITICAL**: Distractors must be highly plausible and tricky (interference options). Use common misconceptions and confused terms as wrong answers. Match length/grammar of correct answer.
+          - TRUE_FALSE: Use "Academic Precision" style. Test for absolute qualifiers ("always", "all") and specific mechanism locations/directions. Correct specific misconceptions (e.g., "Restriction enzymes cut at ends" -> False).
+          - MULTIPLE_CHOICE: 4 options. **CRITICAL**: Distractors must be highly plausible.
           - RANKING: Provide 3-5 items that must be ordered. 
             - 'options' field must contain the items in a RANDOM/SCRAMBLED order.
             - 'correctAnswerArray' field must contain the items in the CORRECT order.
@@ -604,6 +639,111 @@ ${transcriptText}
     }
   };
 
+  // --- SRS Handlers ---
+
+  const updateSRSStats = () => {
+    try {
+        const raw = localStorage.getItem(SRS_STORAGE_KEY);
+        if (raw) {
+            const data: Record<string, SRSItem> = JSON.parse(raw);
+            const now = Date.now();
+            const count = Object.values(data).filter(item => item.nextReview <= now).length;
+            setSrsDueCount(count);
+        } else {
+            setSrsDueCount(0);
+        }
+    } catch (e) { console.error("SRS Load Error", e); }
+  };
+
+  const handleSRSUpdate = (question: Question, isCorrect: boolean) => {
+    try {
+        const raw = localStorage.getItem(SRS_STORAGE_KEY);
+        const data: Record<string, SRSItem> = raw ? JSON.parse(raw) : {};
+        const id = generateHash(question.text);
+        
+        const existing = data[id];
+        
+        // SRS Logic:
+        // 1. If it's a new question and correct, do not add to SRS (only track mistakes or existing items).
+        // 2. If it's incorrect, add it with interval 0 (immediate review).
+        // 3. If it exists and is correct, increase interval.
+
+        if (!existing && isCorrect) return;
+        
+        const now = Date.now();
+        let newItem: SRSItem;
+
+        if (isCorrect) {
+            // Leitner-ish increase
+            const currentInterval = existing ? existing.interval : 0; 
+            // 0 (1st fail) -> 1 day -> 3 days -> 7 days -> 14 days
+            let nextInterval = 1;
+            if (currentInterval >= 1) nextInterval = 3;
+            if (currentInterval >= 3) nextInterval = 7;
+            if (currentInterval >= 7) nextInterval = 14;
+            if (currentInterval >= 14) nextInterval = 30;
+            
+            newItem = {
+                id,
+                question: question, // persist question data
+                interval: nextInterval,
+                repetition: (existing?.repetition || 0) + 1,
+                nextReview: now + (nextInterval * 24 * 60 * 60 * 1000)
+            };
+        } else {
+            // Reset on failure
+            newItem = {
+                id,
+                question: question,
+                interval: 0,
+                repetition: 0,
+                nextReview: now // Due immediately
+            };
+        }
+        
+        data[id] = newItem;
+        localStorage.setItem(SRS_STORAGE_KEY, JSON.stringify(data));
+        updateSRSStats();
+    } catch (e) {
+        console.error("Failed to save SRS data", e);
+    }
+  };
+
+  const startReviewSession = () => {
+    try {
+        const raw = localStorage.getItem(SRS_STORAGE_KEY);
+        if (!raw) return;
+        const data: Record<string, SRSItem> = JSON.parse(raw);
+        const now = Date.now();
+        const dueItems = Object.values(data).filter(item => item.nextReview <= now);
+        
+        if (dueItems.length === 0) {
+            alert("No questions due for review right now!");
+            return;
+        }
+        
+        // Reconstruct question objects for the quiz runner
+        const reviewQuestions = dueItems.map((item, index) => ({
+            ...item.question,
+            id: index // re-index for this specific session
+        }));
+        
+        // Shuffle them for better review
+        for (let i = reviewQuestions.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [reviewQuestions[i], reviewQuestions[j]] = [reviewQuestions[j], reviewQuestions[i]];
+        }
+        
+        setQuestions(reviewQuestions);
+        setQuizSummary([]); // No summary for review mode
+        setCurrentQuestionIndex(0);
+        setUserAnswers([]);
+        setQuizState('PLAYING');
+    } catch (e) {
+        console.error("Error starting review", e);
+    }
+  };
+
   // --- Handlers ---
 
   const handleMaterialUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -693,6 +833,9 @@ ${transcriptText}
         isCorrect = isRankingCorrect(correctArr, userArr);
     }
 
+    // Save to SRS
+    handleSRSUpdate(question, isCorrect);
+
     const newAnswer: UserAnswer = {
         questionId: question.id,
         answer,
@@ -711,6 +854,7 @@ ${transcriptText}
   };
 
   const resetQuiz = () => {
+    updateSRSStats();
     setQuizState('SETUP');
     setMaterialText('');
     setTranscriptText('');
@@ -850,6 +994,15 @@ ${transcriptText}
                             <li><strong>Review:</strong> Take the quiz, get instant feedback, and review a summary of key concepts.</li>
                         </ol>
                     </section>
+                    
+                     <section>
+                        <h4 className="text-lg font-bold text-gray-900 mb-2 flex items-center gap-2">
+                            <History className="w-4 h-4 text-purple-500" /> Spaced Repetition (New)
+                        </h4>
+                        <p className="text-sm text-gray-600">
+                            The app automatically saves questions you answer incorrectly. These will reappear in the "Review Dashboard" at optimal intervals (1 day, 3 days, 1 week, etc.) to help you master difficult concepts.
+                        </p>
+                    </section>
 
                     <section>
                         <h4 className="text-lg font-bold text-gray-900 mb-2 flex items-center gap-2">
@@ -977,6 +1130,28 @@ ${transcriptText}
             </div>
 
             <div className="p-8 space-y-8">
+              
+              {/* SRS Section - Only show if items are due */}
+              {srsDueCount > 0 && (
+                  <div className="bg-purple-50 border border-purple-200 rounded-2xl p-6 flex flex-col md:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-top-4">
+                      <div className="flex items-center gap-4">
+                          <div className="w-12 h-12 rounded-full bg-purple-100 flex items-center justify-center text-purple-600">
+                              <History className="w-6 h-6" />
+                          </div>
+                          <div>
+                              <h3 className="text-lg font-bold text-gray-900">Review Due</h3>
+                              <p className="text-gray-600 text-sm">You have <span className="font-bold text-purple-700">{srsDueCount} questions</span> from previous sessions ready for review.</p>
+                          </div>
+                      </div>
+                      <button 
+                        onClick={startReviewSession}
+                        className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-md transition-all flex items-center gap-2"
+                      >
+                          <Clock className="w-4 h-4" /> Start Review Session
+                      </button>
+                  </div>
+              )}
+
               {/* Input Section */}
               <div className="space-y-4">
                 <label className="block text-sm font-medium text-gray-700">1. Upload Content Sources (Simultaneous)</label>
@@ -1114,7 +1289,7 @@ ${transcriptText}
                       <ToggleLeft className={`w-5 h-5 ${config.type === 'TRUE_FALSE' ? 'text-blue-600' : 'text-gray-400'}`} aria-hidden="true" />
                       <span className="font-semibold text-sm">True / False</span>
                     </div>
-                    <p className="text-xs text-gray-500">Hard Mode & Nuance</p>
+                    <p className="text-xs text-gray-500">Academic Precision</p>
                   </button>
                 </div>
 
