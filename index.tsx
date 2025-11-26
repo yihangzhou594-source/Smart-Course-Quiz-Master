@@ -62,6 +62,28 @@ const MODEL_NAME = 'gemini-2.5-flash';
 
 // --- Helper Functions ---
 
+// Robust retry mechanism for Gemini API
+const callGeminiWithRetry = async (ai: GoogleGenAI, params: any, retries = 3) => {
+    let lastError;
+    for (let i = 0; i < retries; i++) {
+        try {
+            return await ai.models.generateContent(params);
+        } catch (error: any) {
+            lastError = error;
+            const status = error.status || error.code;
+            // Retry on server errors (500, 503)
+            if ((status === 500 || status === 503) && i < retries - 1) {
+                const delay = Math.pow(2, i) * 1000 + (Math.random() * 500);
+                console.warn(`Gemini API Error ${status}. Retrying in ${Math.round(delay)}ms...`);
+                await new Promise(r => setTimeout(r, delay));
+                continue;
+            }
+            throw error;
+        }
+    }
+    throw lastError;
+};
+
 const cleanVTT = (text: string): string => {
   // Remove WEBVTT header
   let clean = text.replace(/WEBVTT\s?(\w*)\n/g, '');
@@ -301,7 +323,7 @@ const App = () => {
             required: ["topics"]
         };
 
-        const response = await ai.models.generateContent({
+        const response = await callGeminiWithRetry(ai, {
             model: MODEL_NAME,
             contents: { parts },
             config: {
@@ -487,9 +509,16 @@ ${transcriptText}
           required: ["keyConcepts", "questions"]
         };
       } else {
+        // Wrap in object to avoid root array instability
         finalSchema = {
-          type: Type.ARRAY,
-          items: questionItemSchema
+          type: Type.OBJECT,
+          properties: {
+            questions: {
+              type: Type.ARRAY,
+              items: questionItemSchema
+            }
+          },
+          required: ["questions"]
         };
       }
 
@@ -512,7 +541,7 @@ ${transcriptText}
 
       parts.push({ text: prompt });
 
-      const response = await ai.models.generateContent({
+      const response = await callGeminiWithRetry(ai, {
         model: MODEL_NAME,
         contents: { parts },
         config: {
@@ -536,26 +565,22 @@ ${transcriptText}
       
       let parsedQuestions: any[] = [];
 
+      // Check for 'questions' array primarily, fallback to direct array
+      if (generatedData.questions && Array.isArray(generatedData.questions)) {
+          parsedQuestions = generatedData.questions;
+      } else if (Array.isArray(generatedData)) {
+          parsedQuestions = generatedData;
+      } else if (!config.enableSummary) {
+         // If we don't find questions and it's not a summary mode, something is wrong
+         throw new Error("Questions were not generated properly. The model response structure was unexpected.");
+      }
+
       if (config.enableSummary) {
-         if (!generatedData.questions || !Array.isArray(generatedData.questions)) {
-             // Fallback if schema was ignored and array was returned directly
-             if (Array.isArray(generatedData)) {
-                parsedQuestions = generatedData;
-             } else {
-                throw new Error("Questions were not generated properly.");
-             }
-         } else {
-             setQuizSummary(generatedData.keyConcepts || []);
-             parsedQuestions = generatedData.questions;
-         }
-      } else {
-         if (Array.isArray(generatedData)) {
-             parsedQuestions = generatedData;
-         } else if (generatedData.questions && Array.isArray(generatedData.questions)) {
-             parsedQuestions = generatedData.questions;
-         } else {
-             throw new Error("Questions were not generated properly.");
-         }
+         setQuizSummary(generatedData.keyConcepts || []);
+      }
+
+      if (parsedQuestions.length === 0) {
+        throw new Error("No questions were generated. Please try again or check your content.");
       }
 
       const formattedQuestions: Question[] = parsedQuestions.map((q: any, index: number) => {
