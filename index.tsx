@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleGenAI, Type } from "@google/genai";
-import { Upload, FileText, CircleCheck, CircleX, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download, Activity, Mic, Eraser, Settings2, GripVertical, CircleHelp, Filter, Target } from 'lucide-react';
+import { Upload, FileText, CircleCheck, CircleX, Brain, RefreshCw, Play, ChevronRight, AlertCircle, Loader2, ListChecks, ToggleLeft, Shuffle, BookOpen, Sparkles, Info, ArrowUp, ArrowDown, Eye, ArrowLeft, Check, X, Download, Activity, Mic, Eraser, GripVertical, CircleHelp, Filter, Target } from 'lucide-react';
 
 // --- Globals ---
 declare const JSZip: any;
@@ -194,7 +194,7 @@ const App = () => {
   // Settings State
   const [config, setConfig] = useState<QuizConfig>({
     type: 'MIXED',
-    count: 15,
+    count: 10,
     enableSummary: true,
     enableTopicFilter: false
   });
@@ -392,7 +392,7 @@ ${transcriptText}
           
           DISTRIBUTION RULES:
           1. Mostly Multiple Choice (MCQ) and True/False (T/F).
-          2. **RANKING/SORTING Questions**: Include MAX 2 ranking questions per 15 items.
+          2. **RANKING/SORTING Questions**: Include MAX 1-2 ranking questions.
              - ONLY generate a Ranking question if the content involves a clear sequential process, timeline, steps, or hierarchy.
              - If no such content exists, do NOT force a Ranking question; use MCQ instead.
           
@@ -1116,53 +1116,6 @@ ${transcriptText}
                     </div>
                     <p className="text-xs text-gray-500">Hard Mode & Nuance</p>
                   </button>
-                </div>
-                
-                {/* Question Quantity Selection */}
-                <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
-                  <div className="flex items-center gap-2 mb-3">
-                      <Settings2 className="w-4 h-4 text-gray-500" aria-hidden="true" />
-                      <label className="text-sm font-medium text-gray-700">Question Quantity</label>
-                  </div>
-                  
-                  <div className="flex flex-wrap items-center gap-3">
-                    {[5, 10, 15, 20, 30].map(num => (
-                      <button
-                        key={num}
-                        onClick={() => setConfig({...config, count: num})}
-                        className={`px-3 py-2 rounded-lg text-sm font-bold transition-all border-2 flex-1 sm:flex-none ${
-                          config.count === num 
-                            ? 'bg-blue-600 text-white border-blue-600 shadow-md transform scale-105' 
-                            : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300 hover:text-blue-600'
-                        }`}
-                      >
-                        {num}
-                      </button>
-                    ))}
-                    
-                    <div className="relative w-24">
-                      <input
-                        type="number"
-                        min="1"
-                        max="50"
-                        value={config.count}
-                        onChange={(e) => {
-                          let val = parseInt(e.target.value);
-                          if (isNaN(val)) val = 0;
-                          if (val > 50) val = 50;
-                          if (val < 0) val = 1;
-                          if (val > 0) setConfig({...config, count: val});
-                        }}
-                        className="w-full px-3 py-2 rounded-lg border-2 border-gray-200 text-center font-bold text-gray-700 focus:border-blue-500 focus:outline-none transition-colors"
-                      />
-                      <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[10px] text-gray-400 pointer-events-none uppercase font-semibold mr-1">
-                        Qty
-                      </span>
-                    </div>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-2">
-                    Select a preset or type a custom amount (1-50).
-                  </p>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
