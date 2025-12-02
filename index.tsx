@@ -70,11 +70,22 @@ const callGeminiWithRetry = async (ai: GoogleGenAI, params: any, retries = 3) =>
             return await ai.models.generateContent(params);
         } catch (error: any) {
             lastError = error;
-            const status = error.status || error.code;
+            
+            // Extract status from various possible error structures (including nested { error: { code: 500 } })
+            const status = error.status || error.code || error.statusCode || error?.error?.code || error?.error?.status;
+            const message = error.message || error?.error?.message || "";
+            const statusStr = String(status);
+
             // Retry on server errors (500, 503)
-            if ((status === 500 || status === 503) && i < retries - 1) {
+            const isInternalError = 
+                statusStr.includes('500') || 
+                statusStr.includes('503') ||
+                message.includes('Internal Server Error') ||
+                message.includes('500');
+
+            if (isInternalError && i < retries - 1) {
                 const delay = Math.pow(2, i) * 1000 + (Math.random() * 500);
-                console.warn(`Gemini API Error ${status}. Retrying in ${Math.round(delay)}ms...`);
+                console.warn(`Gemini API Error (Attempt ${i + 1}). Retrying in ${Math.round(delay)}ms...`, error);
                 await new Promise(r => setTimeout(r, delay));
                 continue;
             }
@@ -237,7 +248,7 @@ const App = () => {
   // Settings State
   const [config, setConfig] = useState<QuizConfig>({
     type: 'MIXED',
-    count: 10,
+    count: 20,
     enableSummary: true,
     enableTopicFilter: false
   });
