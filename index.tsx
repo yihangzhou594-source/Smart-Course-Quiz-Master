@@ -73,19 +73,23 @@ const callGeminiWithRetry = async (ai: GoogleGenAI, params: any, retries = 3) =>
             
             // Extract status from various possible error structures (including nested { error: { code: 500 } })
             const status = error.status || error.code || error.statusCode || error?.error?.code || error?.error?.status;
-            const message = error.message || error?.error?.message || "";
+            // Normalize message for checking
+            const message = (error.message || error?.error?.message || JSON.stringify(error)).toLowerCase();
             const statusStr = String(status);
 
-            // Retry on server errors (500, 503)
+            // Retry on server errors (500, 503) or specific network/RPC errors
             const isInternalError = 
                 statusStr.includes('500') || 
                 statusStr.includes('503') ||
-                message.includes('Internal Server Error') ||
-                message.includes('500');
+                message.includes('internal server error') ||
+                message.includes('rpc failed') ||
+                message.includes('xhr error') ||
+                message.includes('network error') ||
+                message.includes('fetch failed');
 
             if (isInternalError && i < retries - 1) {
-                const delay = Math.pow(2, i) * 1000 + (Math.random() * 500);
-                console.warn(`Gemini API Error (Attempt ${i + 1}). Retrying in ${Math.round(delay)}ms...`, error);
+                const delay = Math.pow(2, i) * 1000 + (Math.random() * 1000);
+                console.warn(`Gemini API Error (Attempt ${i + 1}/${retries}). Retrying in ${Math.round(delay)}ms...`, error);
                 await new Promise(r => setTimeout(r, delay));
                 continue;
             }
