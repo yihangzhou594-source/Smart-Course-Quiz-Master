@@ -71,21 +71,24 @@ const callGeminiWithRetry = async (ai: GoogleGenAI, params: any, retries = 3) =>
         } catch (error: any) {
             lastError = error;
             
-            // Extract status from various possible error structures (including nested { error: { code: 500 } })
-            const status = error.status || error.code || error.statusCode || error?.error?.code || error?.error?.status;
-            // Normalize message for checking
-            const message = (error.message || error?.error?.message || JSON.stringify(error)).toLowerCase();
-            const statusStr = String(status);
+            // Unpack nested error structures common in Google APIs
+            const errorBody = error.error || error;
+            const status = errorBody.status || errorBody.code || error.status;
+            const message = (errorBody.message || JSON.stringify(error)).toLowerCase();
+            const statusStr = String(status).toUpperCase();
 
-            // Retry on server errors (500, 503) or specific network/RPC errors
+            // Retry on server errors (500, 503), specific network/RPC errors, or 'UNKNOWN' status which often masks RPC failures
             const isInternalError = 
                 statusStr.includes('500') || 
                 statusStr.includes('503') ||
+                statusStr === 'UNKNOWN' ||
+                statusStr === 'INTERNAL' ||
                 message.includes('internal server error') ||
                 message.includes('rpc failed') ||
                 message.includes('xhr error') ||
                 message.includes('network error') ||
-                message.includes('fetch failed');
+                message.includes('fetch failed') ||
+                message.includes('failed to fetch');
 
             if (isInternalError && i < retries - 1) {
                 const delay = Math.pow(2, i) * 1000 + (Math.random() * 1000);
@@ -413,47 +416,41 @@ ${transcriptText}
       
       const baseProperties = {
         text: { type: Type.STRING, description: "The question text." },
-        explanation: { type: Type.STRING, description: "Detailed explanation of the answer." }
+        explanation: { type: Type.STRING, description: "Detailed explanation of why the correct answer is correct and why distractors are incorrect." }
       };
 
       if (config.type === 'TRUE_FALSE') {
         taskDescription = `
           Create exactly ${config.count} "True or False" judgment questions.
           
-          *** STYLE GUIDE: ACADEMIC & CLINICAL PRECISION ***
-          Generate questions that test specific mechanisms, absolute qualifiers, and classification nuance. Use the following logical patterns:
+          *** STYLE: CLINICAL & ACADEMIC PRECISION ***
+          Generate questions that test specific mechanisms, definitions, and causality.
           
-          1. **The "Absolute" Trap**: Use absolute qualifiers ("always", "never", "all", "only") to create statements that are *almost* true but technically false due to exceptions found in the text.
-             - Example: "Infection by pathogenic microbes *always* results in disease." -> FALSE (Infection does not always equal disease).
-             - Example: "Not *all* parasites are harmful to the host." -> TRUE.
-             
-          2. **Mechanism Location & Direction**: Swap the specific location or direction of a biological/technical process.
-             - Example: "Restriction endonucleases cut DNA at the *ends* of the molecule." -> FALSE (They cut internal phosphodiester bonds; exonucleases cut ends).
-             - Example: "Hydrogen ions are pumped *into* the matrix." -> FALSE (They are pumped out to the intermembrane space).
-             
-          3. **Attribute Misattribution**: Attribute a specific property (like accuracy, speed, or origin) to a related but incorrect subject.
-             - Example: "Sanger sequencing has *low accuracy*." -> FALSE (It has high accuracy, but low throughput).
-             - Example: "The blue veins in cheese are caused by bacteria." -> FALSE (Caused by a fungus/mold).
-             
-          4. **Definition Precision**: Define a term using the definition of a *closely related* term.
+          Guidelines:
+          1. **Avoid ambiguity**: Statements should be clearly true or clearly false based on standard scientific/academic consensus found in the text.
+          2. **Focus on Misconceptions**: Target common errors in understanding (e.g., confusing "cause" vs "effect", or "bacterial" vs "viral").
+          3. **No "Trick" Syntax**: Do not use double negatives. Focus on the concept.
           
-          REQUIREMENTS:
-          - Aim for a 50/50 split of True and False answers.
-          - The Explanation must explicitly state *why* it is false by correcting the specific error (e.g., "False. Restriction enzymes cut internally; Exonucleases cut at the ends.").
+          Example: "Infection by pathogenic microbes always results in disease." -> FALSE (Infection != Disease).
         `;
       } else if (config.type === 'MULTIPLE_CHOICE') {
         taskDescription = `
           Create exactly ${config.count} Multiple Choice Questions (MCQ).
           
-          *** ADVANCED DISTRACTOR DESIGN (INTERFERENCE OPTIONS) ***
-          You must generate high-quality "distractors" (wrong answers) that discriminate between students who know the material and those who are guessing.
+          *** STYLE: UNIVERSITY EXAM STANDARD ***
+          Generate high-quality questions that test deep conceptual understanding, not just rote memorization.
+          
+          QUESTION TYPES:
+          1. **Best Definition**: "Which of the following best defines [Concept X]?"
+          2. **Mechanism/Causality**: "How does [Mechanism A] result in [Outcome B]?"
+          3. **Distinction**: "What is the primary difference between [Concept X] and [Concept Y]?"
+          4. **Application**: "Which statement best reflects [Author/Theory]'s view on [Topic]?"
           
           RULES FOR OPTIONS:
-          1. **Plausible Logic**: Distractors should be based on common misconceptions, partial truths, or related but incorrect concepts from the text.
-          2. **Syntactic Similarity**: All options (correct and incorrect) must be similar in length, grammatical structure, and complexity. Do NOT make the correct answer significantly longer or more detailed than the distractors.
-          3. **Term Confusion**: If the content defines term A and term B, create a question about term A where term B is a distractor.
-          4. **Avoid Negatives**: Avoid double negatives in options.
-          5. **No "All/None of the above"**: These reduce the cognitive load. Do NOT use them.
+          1. **4 Options**: Provide exactly 4 options (A, B, C, D).
+          2. **Plausible Distractors**: Distractors must be conceptual errors a student might actually make, not nonsense.
+          3. **Single Correct Answer**: Ensure one option is indisputably more correct than the others.
+          4. **No "All/None of the above"**: Avoid these lazy options.
           
           Structure:
           - Each question must have 4 distinct options.
@@ -461,20 +458,17 @@ ${transcriptText}
         `;
       } else {
         taskDescription = `
-          Create exactly ${config.count} questions using a SMART MIX of types.
+          Create exactly ${config.count} questions using a SMART MIX.
           
-          DISTRIBUTION RULES:
-          1. Mostly Multiple Choice (MCQ) and True/False (T/F).
-          2. **RANKING/SORTING Questions**: Include MAX 1-2 ranking questions.
-             - ONLY generate a Ranking question if the content involves a clear sequential process, timeline, steps, or hierarchy.
+          DISTRIBUTION:
+          - ~80% Multiple Choice (MCQ).
+          - ~15% True/False (T/F).
+          - ~5% Ranking (only if a clear process/timeline exists).
           
-          TYPES:
-          - TRUE_FALSE: Use "Academic Precision" style. Test for absolute qualifiers ("always", "all") and specific mechanism locations/directions. Correct specific misconceptions (e.g., "Restriction enzymes cut at ends" -> False).
-          - MULTIPLE_CHOICE: 4 options. **CRITICAL**: Distractors must be highly plausible.
-          - RANKING: Provide 3-5 items that must be ordered. 
-            - 'options' field must contain the items in a RANDOM/SCRAMBLED order.
-            - 'correctAnswerArray' field must contain the items in the CORRECT order.
-            - **CRITICAL**: The strings in 'correctAnswerArray' MUST BE IDENTICAL to the strings in 'options'. Do not add numbering or extra text.
+          STYLES:
+          - **MCQ**: University-level conceptual questions. Focus on definitions, mechanisms, and relationships. "Which statement best describes...?"
+          - **T/F**: Test for specific misconceptions.
+          - **RANKING**: Use ONLY for sequential processes (e.g., "Order the steps of DNA replication").
         `;
       }
 
@@ -484,10 +478,9 @@ ${transcriptText}
           properties: {
               ...baseProperties,
               type: { type: Type.STRING, enum: ["TRUE_FALSE", "MULTIPLE_CHOICE", "RANKING"] },
-              options: { type: Type.ARRAY, items: { type: Type.STRING }, description: "MCQ choices OR Ranking items (scrambled)." },
-              // We ask for specific fields, but the parser will look for fallbacks
+              options: { type: Type.ARRAY, items: { type: Type.STRING }, description: "MCQ choices (4 items) OR Ranking items (scrambled)." },
               correctAnswerBoolean: { type: Type.BOOLEAN, description: "For TRUE_FALSE only." },
-              correctAnswerString: { type: Type.STRING, description: "For MULTIPLE_CHOICE only." },
+              correctAnswerString: { type: Type.STRING, description: "For MULTIPLE_CHOICE only. Must be one of the options strings." },
               correctAnswerArray: { type: Type.ARRAY, items: { type: Type.STRING }, description: "For RANKING only (correct order). Must match strings in 'options' exactly." }
           },
           required: ["type", "text", "explanation"]
@@ -538,20 +531,17 @@ ${transcriptText}
       }
 
       const prompt = `
-        You are a strict university-level exam creator.
+        You are an expert university professor creating a final exam.
         
         TASK:
         Analyze the provided content (slides, notes, transcripts).
         ${config.enableSummary ? "First, extract key concepts." : ""}
         Then, ${taskDescription}
         
-        CRITICAL GUIDELINES:
-        1. **High Difficulty**: Questions should test deep understanding, not just surface recall.
-        2. **Notes Usage**: You MUST incorporate details found in the [Note] sections of the text (footnotes, speaker notes) to create challenging questions.
-        3. **Parsing**: Ensure you fill the correct fields for the chosen question type.
-        4. **RANKING**: Ensure 'correctAnswerArray' uses the EXACT SAME STRINGS as 'options'.
-
-        Output pure JSON matching the schema.
+        CRITICAL:
+        - Ensure questions are extracted ONLY from the provided material.
+        - Questions should cover the *most important* learning objectives.
+        - Output pure JSON matching the schema.
       `;
 
       parts.push({ text: prompt });
