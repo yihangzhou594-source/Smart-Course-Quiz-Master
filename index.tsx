@@ -63,7 +63,7 @@ const MODEL_NAME = 'gemini-2.5-flash';
 // --- Helper Functions ---
 
 // Robust retry mechanism for Gemini API
-const callGeminiWithRetry = async (ai: GoogleGenAI, params: any, retries = 3) => {
+const callGeminiWithRetry = async (ai: GoogleGenAI, params: any, retries = 5) => {
     let lastError;
     for (let i = 0; i < retries; i++) {
         try {
@@ -77,10 +77,17 @@ const callGeminiWithRetry = async (ai: GoogleGenAI, params: any, retries = 3) =>
             const message = (errorBody.message || JSON.stringify(error)).toLowerCase();
             const statusStr = String(status).toUpperCase();
 
+            // Detect Overload specifically
+            const isOverloaded = 
+                statusStr.includes('503') || 
+                message.includes('overloaded') || 
+                message.includes('capacity') ||
+                message.includes('quota');
+
             // Retry on server errors (500, 503), specific network/RPC errors, or 'UNKNOWN' status which often masks RPC failures
             const isInternalError = 
+                isOverloaded ||
                 statusStr.includes('500') || 
-                statusStr.includes('503') ||
                 statusStr === 'UNKNOWN' ||
                 statusStr === 'INTERNAL' ||
                 message.includes('internal server error') ||
@@ -91,8 +98,12 @@ const callGeminiWithRetry = async (ai: GoogleGenAI, params: any, retries = 3) =>
                 message.includes('failed to fetch');
 
             if (isInternalError && i < retries - 1) {
-                const delay = Math.pow(2, i) * 1000 + (Math.random() * 1000);
-                console.warn(`Gemini API Error (Attempt ${i + 1}/${retries}). Retrying in ${Math.round(delay)}ms...`, error);
+                // If overloaded, wait significantly longer (exponential backoff starting at 2s)
+                // If standard error, standard backoff (starting at 1s)
+                const baseDelay = isOverloaded ? 2000 : 1000;
+                const delay = Math.pow(2, i) * baseDelay + (Math.random() * 1000);
+                
+                console.warn(`Gemini API Error (Attempt ${i + 1}/${retries}). ${isOverloaded ? 'Model Overloaded.' : ''} Retrying in ${Math.round(delay)}ms...`, error);
                 await new Promise(r => setTimeout(r, delay));
                 continue;
             }
